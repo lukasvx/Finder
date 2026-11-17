@@ -161,7 +161,8 @@ impl Searcher {
         let mut hits: Vec<(Key, Vec<u8>, Node)> = found.top.heap.into_iter().map(|(k, n)| (k, db.path(n), n)).collect();
         hits.sort_unstable();
         if !opts.full_path && found.base.len() <= CACHE_MAX {
-            self.cache = Some(Cache { generation: db.generation(), opts, needle, base: found.base, delta: found.delta });
+            self.cache =
+                Some(Cache { generation: db.generation(), opts, needle, base: found.base, delta: found.delta });
         }
         Outcome { total, hits: hits.into_iter().map(|(_, _, n)| n).collect() }
     }
@@ -238,7 +239,13 @@ fn scan_ids(r: &Ranker, pattern: &[u8], lead: usize) -> Vec<u32> {
 }
 
 /// Rank `ids` that pass `keep`; also returns the kept ids if `collect`.
-fn rank_ids(r: &Ranker, ids: &[u32], limit: usize, collect: bool, keep: impl Fn(u32) -> bool + Sync) -> (Vec<u32>, TopK) {
+fn rank_ids(
+    r: &Ranker,
+    ids: &[u32],
+    limit: usize,
+    collect: bool,
+    keep: impl Fn(u32) -> bool + Sync,
+) -> (Vec<u32>, TopK) {
     let parts = par_ranges(ids.len(), |c| {
         let mut kept = Vec::new();
         let mut top = TopK::new(limit);
@@ -281,11 +288,8 @@ fn name_matches(r: &Ranker, limit: usize) -> Found {
         found.base.extend(ids);
         found.top.merge(top);
     }
-    found.delta = r
-        .db
-        .delta_nodes()
-        .filter(|&n| finder.find(name_of(r.db, n, r.opts)).is_some() && r.db.is_live(n))
-        .collect();
+    found.delta =
+        r.db.delta_nodes().filter(|&n| finder.find(name_of(r.db, n, r.opts)).is_some() && r.db.is_live(n)).collect();
     found
 }
 
@@ -349,15 +353,14 @@ fn path_matches(r: &Ranker, limit: usize) -> Found {
     drop((anchor, carry));
     let (_, top) = rank_ids(r, &base, limit, false, |_| true);
     let f = memmem::Finder::new(needle);
-    let delta = r
-        .db
-        .delta_nodes()
-        .filter(|&n| {
-            let path = r.db.path(n);
-            let path = if r.opts.case_sensitive { path } else { fold(&path) };
-            f.find(&path).is_some() && r.db.is_live(n)
-        })
-        .collect();
+    let delta =
+        r.db.delta_nodes()
+            .filter(|&n| {
+                let path = r.db.path(n);
+                let path = if r.opts.case_sensitive { path } else { fold(&path) };
+                f.find(&path).is_some() && r.db.is_live(n)
+            })
+            .collect();
     Found { base, delta, top }
 }
 
@@ -451,7 +454,7 @@ mod tests {
             if b.view().is_dir(i) {
                 let depth = b.view().entry(i).depth;
                 for (k, p) in parts.iter().enumerate() {
-                    let dir = depth < 7 && (k + i as usize) % 3 != 0;
+                    let dir = depth < 7 && !(k + i as usize).is_multiple_of(3);
                     b.push(i, &[*p, &[b'0' + (i % 7) as u8]].concat(), if dir { FLAG_DIR } else { 0 });
                 }
             }
@@ -464,9 +467,24 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
         let v = db.view();
         let paths: Vec<Vec<u8>> = (0..v.len()).map(|i| v.path(i)).collect();
-        for (q, full) in [("ab", false), ("c3", false), ("a", true), ("ab1/b", true), ("/a", true), ("c2/", true), ("b2/ba", true)] {
-            let out = Searcher::default().search(&db, q, Options { case_sensitive: false, full_path: full }, usize::MAX, &HashSet::new());
-            let mut got: Vec<u32> = out.hits.iter().map(|&n| match n { Node::Base(i) => i, Node::Delta(_) => unreachable!() }).collect();
+        for (q, full) in
+            [("ab", false), ("c3", false), ("a", true), ("ab1/b", true), ("/a", true), ("c2/", true), ("b2/ba", true)]
+        {
+            let out = Searcher::default().search(
+                &db,
+                q,
+                Options { case_sensitive: false, full_path: full },
+                usize::MAX,
+                &HashSet::new(),
+            );
+            let mut got: Vec<u32> = out
+                .hits
+                .iter()
+                .map(|&n| match n {
+                    Node::Base(i) => i,
+                    Node::Delta(_) => unreachable!(),
+                })
+                .collect();
             got.sort();
             let needle = q.to_lowercase();
             let want: Vec<u32> = (0..v.len())
@@ -498,7 +516,10 @@ mod bench {
 
     fn rss_anon_kb() -> u64 {
         let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-        s.lines().find(|l| l.starts_with("RssAnon:")).and_then(|l| l.split_whitespace().nth(1)?.parse().ok()).unwrap_or(0)
+        s.lines()
+            .find(|l| l.starts_with("RssAnon:"))
+            .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
+            .unwrap_or(0)
     }
 
     /// Five copies of the real cached index under `/copyN`: ~2M entries.
@@ -535,13 +556,29 @@ mod bench {
         let db = Db::new(Index::open(&file).unwrap());
         eprintln!("{n} entries, {} MB file, {:.1} B/entry", size >> 20, size as f64 / n as f64);
         let anon0 = rss_anon_kb();
-        for (q, full) in [("a", false), ("e", false), ("mai", false), ("main.rs", false), ("readme", false),
-                          ("zzzzqq", false), ("src/", true), ("finder/c", true), ("lib", false), ("README.md", false)] {
+        for (q, full) in [
+            ("a", false),
+            ("e", false),
+            ("mai", false),
+            ("main.rs", false),
+            ("readme", false),
+            ("zzzzqq", false),
+            ("src/", true),
+            ("finder/c", true),
+            ("lib", false),
+            ("README.md", false),
+        ] {
             let mut times = Vec::new();
             let mut total = 0;
             for _ in 0..5 {
                 let t = Instant::now();
-                let out = Searcher::default().search(&db, q, Options { case_sensitive: false, full_path: full }, 1000, &HashSet::new());
+                let out = Searcher::default().search(
+                    &db,
+                    q,
+                    Options { case_sensitive: false, full_path: full },
+                    1000,
+                    &HashSet::new(),
+                );
                 times.push(t.elapsed());
                 total = out.total;
             }
@@ -555,7 +592,10 @@ mod bench {
             s.search(&db, &"readme"[..k], Options::default(), 1000, &HashSet::new());
         }
         eprintln!("typing 'readme' (6 queries, narrowing): {:?}", t.elapsed());
-        eprintln!("anon RSS grew {} MB during queries (incl. narrowing cache)", (rss_anon_kb().saturating_sub(anon0)) >> 10);
+        eprintln!(
+            "anon RSS grew {} MB during queries (incl. narrowing cache)",
+            (rss_anon_kb().saturating_sub(anon0)) >> 10
+        );
         std::fs::remove_file(&file).unwrap();
     }
 }

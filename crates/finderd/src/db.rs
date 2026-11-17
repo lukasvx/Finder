@@ -183,10 +183,10 @@ impl Db {
 
     /// Direct child of `dir` named `name`.
     pub fn child(&self, dir: Node, name: &[u8]) -> Option<Node> {
-        if let Some(kids) = self.kids.get(&dir) {
-            if let Some(&d) = kids.iter().find(|&&d| &*self.nodes[d as usize].name == name) {
-                return Some(Node::Delta(d));
-            }
+        if let Some(kids) = self.kids.get(&dir)
+            && let Some(&d) = kids.iter().find(|&&d| &*self.nodes[d as usize].name == name)
+        {
+            return Some(Node::Delta(d));
         }
         match dir {
             Node::Base(b) => self.view().find_child(b, name).filter(|c| !self.removed.contains(c)).map(Node::Base),

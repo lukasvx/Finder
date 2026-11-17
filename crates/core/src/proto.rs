@@ -102,7 +102,8 @@ impl<'a> Dec<'a> {
 }
 
 fn write_frame(w: &mut impl Write, payload: &[u8]) -> io::Result<()> {
-    let len = u32::try_from(payload.len()).ok().filter(|&n| n <= MAX_FRAME).ok_or_else(|| invalid("message too large"))?;
+    let len =
+        u32::try_from(payload.len()).ok().filter(|&n| n <= MAX_FRAME).ok_or_else(|| invalid("message too large"))?;
     let mut buf = Vec::with_capacity(4 + payload.len());
     buf.extend_from_slice(&len.to_le_bytes());
     buf.extend_from_slice(payload);
@@ -128,11 +129,7 @@ impl Request {
         let mut e = Enc::default();
         match self {
             Request::Search(q) => {
-                e.u8(REQ_SEARCH)
-                    .bytes(q.text.as_bytes())
-                    .u8(q.case_sensitive as u8)
-                    .u8(q.full_path as u8)
-                    .u32(q.limit);
+                e.u8(REQ_SEARCH).bytes(q.text.as_bytes()).u8(q.case_sensitive as u8).u8(q.full_path as u8).u32(q.limit);
             }
             Request::Opened(path) => {
                 e.u8(REQ_OPENED).bytes(path);

@@ -221,8 +221,7 @@ pub fn sync_dir(db: &mut Db, dir: Node, path: &[u8], ex: &Exclusions) {
         Err(_) => return,
     };
     let on_disk: HashMap<&[u8], u8> = disk.iter().map(|(n, f)| (n.as_slice(), *f)).collect();
-    let gone: Vec<Node> =
-        db.children(dir).into_iter().filter(|&c| !on_disk.contains_key(db.name(c))).collect();
+    let gone: Vec<Node> = db.children(dir).into_iter().filter(|&c| !on_disk.contains_key(db.name(c))).collect();
     for c in gone {
         db.remove_node(c);
     }

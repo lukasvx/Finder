@@ -1,19 +1,19 @@
 //! The indexer thread: the only writer of the database. Loads or builds the index,
 //! applies watcher events, catches up on changes, and compacts the delta into a new cache file.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use finder_core::paths;
 
+use crate::Shared;
 use crate::db::Db;
 use crate::index::Index;
 use crate::scan::{self, Exclusions};
 #[cfg(target_os = "linux")]
 use crate::watch::{self, Change};
-use crate::Shared;
 
 #[cfg(not(target_os = "linux"))]
 pub enum Change {}
@@ -44,7 +44,8 @@ pub fn run(shared: Arc<Shared>, rescan: bool) {
     lower_priority();
     let ex = Arc::new(Exclusions::system());
     let file = paths::index_file();
-    let cached = if rescan { None } else { Index::open(&file).map_err(|e| eprintln!("finderd: no usable cache: {e}")).ok() };
+    let cached =
+        if rescan { None } else { Index::open(&file).map_err(|e| eprintln!("finderd: no usable cache: {e}")).ok() };
     let mut since = match cached {
         Some(idx) => {
             eprintln!("finderd: loaded {} entries from {}", idx.view().len(), file.display());

@@ -9,9 +9,9 @@ use std::rc::Rc;
 use finder_core::paths::{self, SEP};
 use finder_core::proto::{Hit, Query};
 use finder_core::settings::Settings;
+use fltk::browser::BrowserScrollbar;
 use fltk::enums::{Align, CallbackTrigger, Color, Event, Font, Key};
 use fltk::prelude::*;
-use fltk::browser::BrowserScrollbar;
 use fltk::{app, browser::HoldBrowser, frame::Frame, input::Input, window::Window};
 
 use crate::client::{Client, Msg};
@@ -116,7 +116,12 @@ fn main() {
             }
             client.search(
                 seq.get(),
-                Query { text, case_sensitive: settings.case_sensitive, full_path: settings.match_full_path, limit: LIMIT },
+                Query {
+                    text,
+                    case_sensitive: settings.case_sensitive,
+                    full_path: settings.match_full_path,
+                    limit: LIMIT,
+                },
             );
         }
     });

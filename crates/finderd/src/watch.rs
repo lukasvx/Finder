@@ -17,8 +17,13 @@ use crate::index::FLAG_DIR;
 use crate::scan::{Exclusions, child_path, read_dir_sorted};
 
 pub enum Change {
-    Created { path: Vec<u8>, is_dir: bool },
-    Removed { path: Vec<u8> },
+    Created {
+        path: Vec<u8>,
+        is_dir: bool,
+    },
+    Removed {
+        path: Vec<u8>,
+    },
     /// Events were lost; re-sync from disk.
     Overflow,
 }

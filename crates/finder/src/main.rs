@@ -5,6 +5,8 @@
 mod client;
 mod open;
 mod results;
+#[cfg(windows)]
+mod activate;
 mod drag;
 mod theme;
 #[cfg(feature = "uitest")]
@@ -674,6 +676,8 @@ fn main() {
 
     win.show();
     let _ = input.take_focus();
+    #[cfg(windows)]
+    activate::bring_to_front(&win);
     #[cfg(feature = "uitest")]
     uitest::run(&win);
 

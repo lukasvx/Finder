@@ -88,6 +88,11 @@ fn pipe_name(sid: &str) -> String {
     format!(r"\\.\pipe\finder-{sid}")
 }
 
+/// Pipe of the open `finder` window (see `Listener::bind_ui`).
+fn ui_pipe_name(sid: &str) -> String {
+    format!(r"\\.\pipe\finder-ui-{sid}")
+}
+
 /// Server side: always keeps one instance waiting for the next client.
 pub struct Listener {
     name: Vec<u16>,
@@ -102,11 +107,20 @@ impl Listener {
     /// Create the pipe. Fails with `AddrInUse` if another daemon already owns it.
     pub fn bind() -> io::Result<Listener> {
         let sid = current_user_sid()?;
-        Listener::bind_at(&pipe_name(&sid), &sid)
+        Listener::bind_at(&pipe_name(&sid), &sid).map_err(|e| match e.kind() {
+            io::ErrorKind::AddrInUse => io::Error::new(e.kind(), "another finderd is already running"),
+            _ => e,
+        })
+    }
+
+    /// Create the pipe of the open `finder` window. Fails with `AddrInUse` while another window owns it.
+    pub fn bind_ui() -> io::Result<Listener> {
+        let sid = current_user_sid()?;
+        Listener::bind_at(&ui_pipe_name(&sid), &sid)
     }
 
     fn bind_at(name: &str, sid: &str) -> io::Result<Listener> {
-        let in_use = || io::Error::new(io::ErrorKind::AddrInUse, "another finderd is already running");
+        let in_use = || io::Error::new(io::ErrorKind::AddrInUse, "the pipe is already served");
         // Probe without connecting (a connect would use up the other daemon's waiting instance).
         // FILE_FLAG_FIRST_PIPE_INSTANCE below closes the race; this check also covers Wine, which ignores the flag.
         let wname = wide(name);
@@ -174,6 +188,12 @@ impl Listener {
 pub fn connect() -> io::Result<File> {
     let sid = current_user_sid()?;
     connect_at(&pipe_name(&sid), &sid)
+}
+
+/// Connect to the open `finder` window's pipe (same user only).
+pub fn connect_ui() -> io::Result<File> {
+    let sid = current_user_sid()?;
+    connect_at(&ui_pipe_name(&sid), &sid)
 }
 
 fn connect_at(name: &str, sid: &str) -> io::Result<File> {

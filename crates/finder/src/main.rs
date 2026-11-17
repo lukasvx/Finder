@@ -8,6 +8,7 @@ mod results;
 #[cfg(windows)]
 mod activate;
 mod drag;
+mod single;
 mod theme;
 #[cfg(feature = "uitest")]
 mod uitest;
@@ -347,6 +348,7 @@ fn main() {
     let pal: Pal = Rc::new(Cell::new(Palette::load(settings.borrow().theme)));
     pal.get().apply_globals();
     let (tx, rx) = app::channel::<Msg>();
+    single::take_over(tx.clone());
     let client = Rc::new(Client::start(tx));
 
     let mut win = Window::default().with_size(W, H).with_label("Finder").center_screen();
@@ -725,6 +727,18 @@ fn main() {
                 status.set_label(&text);
                 more.hide();
             }
+            Msg::Quit => app::quit(),
+        }
+    }
+
+    // Closed while the settings panel was open (focus loss, Esc, another `finder`): keep edits
+    // to the excluded folders, which are otherwise saved when the panel closes.
+    let p = panel.borrow();
+    if p.group.visible() {
+        let exclude = split_list(&p.exclude.value());
+        if settings.borrow().exclude != exclude {
+            settings.borrow_mut().exclude = exclude;
+            let _ = settings.borrow().save();
         }
     }
 }

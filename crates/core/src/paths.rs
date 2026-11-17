@@ -76,6 +76,12 @@ pub fn socket_path() -> PathBuf {
     env_dir("XDG_RUNTIME_DIR").unwrap_or_else(cache_dir).join("finder.sock")
 }
 
+/// Unix socket of the open `finder` window, so a new one can close it.
+#[cfg(unix)]
+pub fn ui_socket_path() -> PathBuf {
+    env_dir("XDG_RUNTIME_DIR").unwrap_or_else(cache_dir).join("finder-ui.sock")
+}
+
 /// Convert raw index path bytes to a `PathBuf`.
 pub fn from_bytes(bytes: &[u8]) -> PathBuf {
     #[cfg(unix)]

@@ -12,6 +12,8 @@ use fltk::app;
 pub enum Msg {
     Results { seq: u64, total: u64, indexing: bool, hits: Vec<Hit> },
     Status(String),
+    /// A newer `finder` was started: close this one.
+    Quit,
 }
 
 #[derive(Default)]

@@ -2,7 +2,8 @@
 //!
 //! `FINDER_UITEST="x,y;x,y>x2,y2;…"` replays left clicks (or a drag from x,y to x2,y2) at window
 //! coordinates through FLTK's normal event dispatch, one every `FINDER_UITEST_STEP` seconds
-//! (default 1), and keeps the window open on focus loss (logging that it would have closed). Clicks bypass the OS input stack, so no input-control permission is needed.
+//! (default 1), and keeps the window open on focus loss (logging that it would have closed).
+//! Clicks bypass the OS input stack, so no input-control permission is needed.
 
 use std::os::raw::c_int;
 

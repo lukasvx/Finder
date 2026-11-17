@@ -10,7 +10,7 @@ use finder_core::proto::{Hit, Query, Request, Response};
 
 use crate::Shared;
 use crate::db::Node;
-use crate::search::{Options, Searcher};
+use crate::search::{Filter, Options, Searcher};
 
 #[cfg(unix)]
 pub type Listener = std::os::unix::net::UnixListener;
@@ -107,6 +107,7 @@ fn search(shared: &Shared, searcher: &mut Searcher, q: &Query) -> Response {
     };
     let recent: HashSet<Node> = shared.recent.lock().unwrap().nodes(db);
     let opts = Options { case_sensitive: q.case_sensitive, full_path: q.full_path };
+    searcher.set_filter(Filter { hide_hidden: !q.show_hidden, exclude: q.exclude.clone() });
     let out = searcher.search(db, &q.text, opts, q.limit as usize, &recent);
     let hits = out.hits.iter().map(|&n| Hit { is_dir: db.is_dir(n), path: db.path(n) }).collect();
     Response::Results { total: out.total as u64, indexing, hits }

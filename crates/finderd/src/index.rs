@@ -16,14 +16,17 @@ use bytemuck::{Pod, Zeroable};
 use finder_core::paths::SEP;
 use memmap2::Mmap;
 
-use crate::fold::fold_into;
+use finder_core::fold::fold_into;
 
 pub const NONE: u32 = u32::MAX;
 pub const FLAG_DIR: u8 = 1;
 pub const FLAG_SYMLINK: u8 = 2;
+/// Marked hidden by the filesystem (Windows attribute). Dotfiles are recognized by name instead.
+pub const FLAG_HIDDEN: u8 = 4;
 
 const MAGIC: [u8; 8] = *b"FINDRIDX";
-const VERSION: u32 = 1;
+/// 2: `FLAG_HIDDEN`. A cache with another version is rebuilt by a full scan.
+const VERSION: u32 = 2;
 const HEADER_LEN: usize = size_of::<Header>();
 
 #[repr(C)]
@@ -101,8 +104,9 @@ impl<'a> View<'a> {
         kids.binary_search_by(|e| self.names[Self::range(e)].cmp(name)).ok().map(|k| r.start + k as u32)
     }
 
+    /// Roots are `""` (Unix) or drive names such as `C:`, which may be typed in lowercase.
     pub fn find_root(&self, name: &[u8]) -> Option<u32> {
-        (0..self.root_count).find(|&r| self.name(r) == name)
+        (0..self.root_count).find(|&r| self.name(r).eq_ignore_ascii_case(name))
     }
 
     /// Id of the entry whose name (or trailing `\0`) covers byte `pos` of the name buffer.

@@ -11,8 +11,8 @@ use finder_core::paths::SEP;
 use memchr::memmem;
 
 use crate::db::{Bitset, Db, Node};
-use crate::fold::fold;
-use crate::index::{NONE, View};
+use crate::index::{FLAG_HIDDEN, NONE, View};
+use finder_core::fold::fold;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Options {
@@ -39,10 +39,106 @@ struct Cache {
     delta: Vec<Node>,
 }
 
+/// What to leave out of results; each rule also removes everything below a matching folder.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Filter {
+    /// Leave out names starting with `.` and entries with the hidden attribute.
+    pub hide_hidden: bool,
+    /// Folder names (any depth, case-insensitive) or absolute paths (containing a separator).
+    pub exclude: Vec<Vec<u8>>,
+}
+
+impl Filter {
+    fn is_empty(&self) -> bool {
+        !self.hide_hidden && self.exclude.is_empty()
+    }
+
+    fn is_path(e: &[u8]) -> bool {
+        e.iter().any(|&b| b == b'/' || b == SEP)
+    }
+
+    /// Excluded names, folded.
+    fn names(&self) -> Vec<Vec<u8>> {
+        self.exclude.iter().filter(|e| !Filter::is_path(e)).map(|e| fold(e)).collect()
+    }
+
+    fn paths(&self) -> impl Iterator<Item = &[u8]> {
+        self.exclude.iter().filter(|e| Filter::is_path(e)).map(Vec::as_slice)
+    }
+
+    /// Whether this one entry matches a rule by itself (not via an ancestor).
+    fn blocks(&self, names: &[Vec<u8>], name: &[u8], lower: &[u8], flags: u8) -> bool {
+        (self.hide_hidden && (name.first() == Some(&b'.') || flags & FLAG_HIDDEN != 0))
+            || names.iter().any(|n| n.as_slice() == lower)
+    }
+
+    /// Base entries left out, computed in one pass (parents come before children).
+    fn base_bits(&self, db: &Db) -> Bitset {
+        let v = db.view();
+        let names = self.names();
+        let mut bits = Bitset::new(v.len());
+        for p in self.paths() {
+            if let Some(Node::Base(b)) = db.lookup(p) {
+                bits.set(b);
+            }
+        }
+        for i in 0..v.len() {
+            if bits.get(i) {
+                continue;
+            }
+            let e = v.entry(i);
+            if (e.parent != NONE && bits.get(e.parent)) || self.blocks(&names, v.name(i), v.lower_name(i), e.flags) {
+                bits.set(i);
+            }
+        }
+        bits
+    }
+}
+
+/// The filter applied to one database: a bitset over the base, and rules for delta nodes.
+struct Blocked<'a> {
+    filter: &'a Filter,
+    base: Option<&'a Bitset>,
+    names: Vec<Vec<u8>>,
+    /// Excluded paths that resolve to delta nodes.
+    delta_roots: Vec<Node>,
+}
+
+impl Blocked<'_> {
+    fn base(&self, i: u32) -> bool {
+        self.base.is_some_and(|b| b.get(i))
+    }
+
+    /// Whether delta node `n` or one of its ancestors is left out.
+    fn delta(&self, db: &Db, n: Node) -> bool {
+        if self.filter.is_empty() {
+            return false;
+        }
+        let mut cur = Some(n);
+        while let Some(c) = cur {
+            match c {
+                Node::Base(b) => return self.base(b),
+                Node::Delta(_) => {
+                    if self.delta_roots.contains(&c)
+                        || self.filter.blocks(&self.names, db.name(c), db.lower_name(c), db.flags(c))
+                    {
+                        return true;
+                    }
+                }
+            }
+            cur = db.parent(c);
+        }
+        false
+    }
+}
+
 /// Per-connection search state; remembers the last match set to narrow it when the keyword grows.
 #[derive(Default)]
 pub struct Searcher {
     cache: Option<Cache>,
+    filter: Filter,
+    /// `filter` applied to the base index identified by the `u64` (`Db::base_id`).
+    blocked: Option<(u64, Bitset)>,
 }
 
 /// Rank key, smaller is better: match kind (exact name, prefix, substring, path only),
@@ -55,6 +151,19 @@ struct Ranker<'a> {
     needle: &'a [u8],
     opts: Options,
     recent: &'a HashSet<Node>,
+    blocked: &'a Blocked<'a>,
+}
+
+impl Ranker<'_> {
+    /// Base entry `i` is neither removed nor filtered out.
+    fn shown(&self, hidden: Option<&Bitset>, i: u32) -> bool {
+        visible(hidden, i) && !self.blocked.base(i)
+    }
+
+    /// Delta node `n` is live and not filtered out.
+    fn shown_delta(&self, n: Node) -> bool {
+        self.db.is_live(n) && !self.blocked.delta(self.db, n)
+    }
 }
 
 impl Ranker<'_> {
@@ -130,6 +239,15 @@ struct Found {
 }
 
 impl Searcher {
+    /// Use `filter` for the following searches.
+    pub fn set_filter(&mut self, filter: Filter) {
+        if filter != self.filter {
+            self.filter = filter;
+            self.cache = None;
+            self.blocked = None;
+        }
+    }
+
     pub fn search(&mut self, db: &Db, query: &str, opts: Options, limit: usize, recent: &HashSet<Node>) -> Outcome {
         let raw: Vec<u8> = query.bytes().filter(|&b| b != 0).collect();
         let needle = if opts.case_sensitive { raw } else { fold(&raw) };
@@ -137,7 +255,21 @@ impl Searcher {
         if needle.is_empty() || limit == 0 {
             return Outcome { total: 0, hits: Vec::new() };
         }
-        let r = Ranker { db, v: db.view(), needle: &needle, opts, recent };
+        if !self.filter.is_empty() && self.blocked.as_ref().is_none_or(|(id, _)| *id != db.base_id()) {
+            self.blocked = Some((db.base_id(), self.filter.base_bits(db)));
+        }
+        let blocked = Blocked {
+            filter: &self.filter,
+            base: self.blocked.as_ref().filter(|_| !self.filter.is_empty()).map(|(_, b)| b),
+            names: self.filter.names(),
+            delta_roots: self
+                .filter
+                .paths()
+                .filter_map(|p| db.lookup(p))
+                .filter(|n| matches!(n, Node::Delta(_)))
+                .collect(),
+        };
+        let r = Ranker { db, v: db.view(), needle: &needle, opts, recent, blocked: &blocked };
         let mut found = match cache {
             // A keyword containing the previous one matches a subset of its results.
             Some(c)
@@ -276,7 +408,7 @@ fn name_matches(r: &Ranker, limit: usize) -> Found {
         let mut ids = Vec::new();
         let mut top = TopK::new(limit);
         scan_range(r.v, hay, &finder, 0, c.start as u32..c.end as u32, |id| {
-            if visible(hidden, id) {
+            if r.shown(hidden, id) {
                 ids.push(id);
                 top.push(r.base_key(id), Node::Base(id));
             }
@@ -289,7 +421,7 @@ fn name_matches(r: &Ranker, limit: usize) -> Found {
         found.top.merge(top);
     }
     found.delta =
-        r.db.delta_nodes().filter(|&n| finder.find(name_of(r.db, n, r.opts)).is_some() && r.db.is_live(n)).collect();
+        r.db.delta_nodes().filter(|&n| finder.find(name_of(r.db, n, r.opts)).is_some() && r.shown_delta(n)).collect();
     found
 }
 
@@ -345,7 +477,7 @@ fn path_matches(r: &Ranker, limit: usize) -> Found {
         let a = anchor.get(i);
         if a || inherited {
             carry.set(i);
-            if (inherited || !trailing) && visible(hidden, i) {
+            if (inherited || !trailing) && r.shown(hidden, i) {
                 base.push(i);
             }
         }
@@ -358,7 +490,7 @@ fn path_matches(r: &Ranker, limit: usize) -> Found {
             .filter(|&n| {
                 let path = r.db.path(n);
                 let path = if r.opts.case_sensitive { path } else { fold(&path) };
-                f.find(&path).is_some() && r.db.is_live(n)
+                f.find(&path).is_some() && r.shown_delta(n)
             })
             .collect();
     Found { base, delta, top }
@@ -423,6 +555,50 @@ mod tests {
         let (_, hits) = run(&db, &mut s, "other", false, true);
         assert_eq!(hits, ["/home/u/projects/other", "/home/u/projects/other/src", "/home/u/projects/other/src/lib.rs"]);
         assert_eq!(run(&db, &mut s, "u/notes/t", false, true).1, ["/home/u/notes/todo.md"]);
+    }
+
+    #[test]
+    fn filter_hides_and_excludes() {
+        let paths = [
+            "/home/u/.config/notes.ini",
+            "/home/u/.notes",
+            "/home/u/proj/node_modules/x/notes.js",
+            "/home/u/proj/notes.md",
+            "/home/u/old/notes.txt",
+        ];
+        let mut db = db_from(&paths, "search-filter");
+        let mut s = Searcher::default();
+        assert_eq!(run(&db, &mut s, "notes", false, false).0, 5);
+        let filter = |extra: &[&str]| Filter {
+            hide_hidden: true,
+            exclude: ["NODE_MODULES", "/home/u/old"].iter().chain(extra).map(|e| e.as_bytes().to_vec()).collect(),
+        };
+        s.set_filter(filter(&[]));
+        assert_eq!(run(&db, &mut s, "notes", false, false), (1, vec!["/home/u/proj/notes.md".to_string()]));
+        // Narrowing keeps the filter.
+        assert_eq!(run(&db, &mut s, "notes.", false, false).0, 1);
+        let (_, hits) = run(&db, &mut s, "home/u/", false, true);
+        assert_eq!(hits, ["/home/u/proj", "/home/u/proj/notes.md"]);
+
+        // New entries: below a hidden or excluded folder, or excluded by path, are left out too.
+        for (p, dir) in [
+            ("/home/u/proj/.cache", true),
+            ("/home/u/proj/.cache/notes2", false),
+            ("/home/u/proj/node_modules/x/notes3", false),
+            ("/home/u/new", true),
+            ("/home/u/new/notes4", false),
+            ("/home/u/new/sub", true),
+            ("/home/u/new/sub/notes5", false),
+        ] {
+            db.insert(p.as_bytes(), if dir { FLAG_DIR } else { 0 }).unwrap();
+        }
+        let (_, hits) = run(&db, &mut s, "notes", false, false);
+        assert_eq!(hits, ["/home/u/new/notes4", "/home/u/proj/notes.md", "/home/u/new/sub/notes5"]);
+        s.set_filter(filter(&["/home/u/new/sub"]));
+        let (_, hits) = run(&db, &mut s, "notes", false, false);
+        assert_eq!(hits, ["/home/u/new/notes4", "/home/u/proj/notes.md"]);
+        s.set_filter(Filter::default());
+        assert_eq!(run(&db, &mut s, "notes", false, false).0, 9);
     }
 
     #[test]

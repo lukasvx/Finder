@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::fold::fold;
+use finder_core::fold::fold;
 use crate::index::{FLAG_DIR, Index, IndexBuilder, NONE, View, join_path, split_path};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -56,6 +56,8 @@ pub struct Db {
     /// Base entries hidden by a removed ancestor; computed lazily, reset on change.
     hidden: OnceLock<Bitset>,
     generation: u64,
+    /// Identifies the base index; changes only when a new `Db` is created (load or compaction).
+    base_id: u64,
 }
 
 impl Db {
@@ -67,6 +69,7 @@ impl Db {
             kids: HashMap::new(),
             hidden: OnceLock::new(),
             generation: next_generation(),
+            base_id: next_generation(),
         }
     }
 
@@ -86,6 +89,10 @@ impl Db {
     /// Bumped on every change; used to invalidate cached search results.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub fn base_id(&self) -> u64 {
+        self.base_id
     }
 
     fn changed(&mut self) {

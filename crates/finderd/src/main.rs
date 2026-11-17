@@ -3,7 +3,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod db;
-mod fold;
 mod index;
 mod indexer;
 mod install;

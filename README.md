@@ -57,7 +57,9 @@ CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test --release --target x86
 
 (Most `finderd` unit tests use Unix-style paths and don't run on Windows yet; `-p finderd watch` does.)
 
-Run `finder [keyword]`; it starts `finderd` if needed (log: `~/.cache/finder/finderd.log`). `finderd --install` starts the daemon at login (systemd user service / Windows `Run` key) and adds a Finder app launcher; `--uninstall` undoes it. `finderd --rescan` forces a full scan.
+UI checks without input devices: `cargo build --release -p finder --features uitest --target-dir target/uitest`, then `FINDER_UITEST="x,y;x,y" ./target/uitest/release/finder` replays clicks (`x,y`) or drags (`x,y>x2,y2`) at window coordinates (see `crates/finder/src/uitest.rs`).
+
+Run `finder [keyword]` (`finder --settings` opens the settings panel); it starts `finderd` if needed (log: `~/.cache/finder/finderd.log`). `finderd --install` starts the daemon at login (systemd user service / Windows `Run` key) and adds a Finder app launcher; `--uninstall` undoes it. `finderd --rescan` forces a full scan.
 
 Fedora deps: `rust cargo gcc-c++ libstdc++-static cmake libX11-devel libXext-devel libXft-devel libXinerama-devel libXcursor-devel libXrender-devel libXfixes-devel pango-devel cairo-devel wayland-devel wayland-protocols-devel libxkbcommon-devel dbus-devel mesa-libGL-devel`
 
@@ -67,18 +69,23 @@ Fedora deps: `rust cargo gcc-c++ libstdc++-static cmake libX11-devel libXext-dev
 
 | Crate | Contents |
 |---|---|
-| `crates/core` | Paths, settings, IPC protocol |
+| `crates/core` | Paths, settings, IPC protocol, case folding |
 | `crates/finderd` | Daemon: index, scan, change listener, search |
 | `crates/finder` | UI |
 
 ## Settings
 
-Plain text, `key = value`, `#` comments. Created with defaults if missing; re-read on every `finder` launch.
+Plain text, `key = value`, `#` comments. Created with defaults if missing; re-read on every `finder` launch. Changed in the app with the toggles next to the search field (`Aa`, `Path`, `Hidden`; Alt+C/P/H) or the settings panel (sliders button or Ctrl+,), which rewrites the file.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `case_sensitive` | `false` | Match case exactly |
 | `match_full_path` | `false` | Match against the full path instead of the name only |
+| `show_hidden` | `false` | Show hidden entries (names starting with `.`; on Windows also the hidden attribute) and everything below hidden folders |
+| `exclude` | (empty) | Comma-separated folder names (`node_modules`, any depth, case-insensitive) or paths (`~/Downloads/old`) left out of results with everything below them |
+| `theme` | `auto` | `auto` follows the desktop (KDE color scheme and accent / GTK dark preference; Windows app mode and accent), or `light` / `dark` |
+
+Hidden files and exclusions are filtered at query time, so they stay in the index and changes apply immediately.
 
 ## Deferred
 
@@ -99,7 +106,8 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 - [x] Delta + compaction
 - [x] Search engine
 - [x] Daemon ↔ UI IPC (Unix socket / named pipe)
-- [x] UI: keyword prompt + result list
+- [x] UI: keyword prompt + result list; launcher look, match highlighting, file-type icons, light/dark theme
+- [x] In-app settings: toggles, settings panel, hidden files, excluded folders
 - [x] Open Dolphin / Explorer
 - [x] Autostart `finderd`
 - [x] Benchmark RAM and latency against goals

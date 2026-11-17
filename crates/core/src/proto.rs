@@ -17,6 +17,10 @@ pub struct Query {
     pub full_path: bool,
     /// Maximum number of hits to return (the total count is always reported).
     pub limit: u32,
+    /// Include hidden entries and everything below hidden folders.
+    pub show_hidden: bool,
+    /// Folder names or absolute paths whose subtrees are left out.
+    pub exclude: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,6 +134,10 @@ impl Request {
         match self {
             Request::Search(q) => {
                 e.u8(REQ_SEARCH).bytes(q.text.as_bytes()).u8(q.case_sensitive as u8).u8(q.full_path as u8).u32(q.limit);
+                e.u8(q.show_hidden as u8).u32(q.exclude.len() as u32);
+                for x in &q.exclude {
+                    e.bytes(x);
+                }
             }
             Request::Opened(path) => {
                 e.u8(REQ_OPENED).bytes(path);
@@ -141,12 +149,13 @@ impl Request {
     pub fn decode(buf: &[u8]) -> io::Result<Request> {
         let mut d = Dec(buf);
         let req = match d.u8()? {
-            REQ_SEARCH => Request::Search(Query {
-                text: d.string()?,
-                case_sensitive: d.bool()?,
-                full_path: d.bool()?,
-                limit: d.u32()?,
-            }),
+            REQ_SEARCH => {
+                let (text, case_sensitive, full_path, limit) = (d.string()?, d.bool()?, d.bool()?, d.u32()?);
+                let show_hidden = d.bool()?;
+                let n = d.u32()?;
+                let exclude = (0..n).map(|_| d.bytes().map(<[u8]>::to_vec)).collect::<io::Result<_>>()?;
+                Request::Search(Query { text, case_sensitive, full_path, limit, show_hidden, exclude })
+            }
             REQ_OPENED => Request::Opened(d.bytes()?.to_vec()),
             _ => return Err(invalid("unknown request")),
         };
@@ -220,7 +229,14 @@ mod tests {
     #[test]
     fn roundtrip() {
         let reqs = [
-            Request::Search(Query { text: "héllo".into(), case_sensitive: true, full_path: false, limit: 500 }),
+            Request::Search(Query {
+                text: "héllo".into(),
+                case_sensitive: true,
+                full_path: false,
+                limit: 500,
+                show_hidden: true,
+                exclude: vec![b"node_modules".to_vec(), b"/home/x/old".to_vec()],
+            }),
             Request::Opened(b"/home/x".to_vec()),
         ];
         for r in reqs {

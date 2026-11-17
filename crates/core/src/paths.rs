@@ -13,9 +13,21 @@ fn env_dir(var: &str) -> Option<PathBuf> {
     env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
-#[cfg(unix)]
-fn home() -> PathBuf {
-    env_dir("HOME").unwrap_or_else(|| PathBuf::from("/"))
+/// The user's home folder.
+pub fn home() -> PathBuf {
+    #[cfg(unix)]
+    return env_dir("HOME").unwrap_or_else(|| PathBuf::from("/"));
+    #[cfg(windows)]
+    return env_dir("USERPROFILE").unwrap_or_else(|| PathBuf::from(r"C:\"));
+}
+
+/// Expand a leading `~` (alone or followed by a separator) to the home folder.
+pub fn expand_home(s: &str) -> PathBuf {
+    match s.strip_prefix('~') {
+        Some("") => home(),
+        Some(rest) if rest.starts_with(['/', '\\']) => home().join(&rest[1..]),
+        _ => PathBuf::from(s),
+    }
 }
 
 /// `$XDG_CONFIG_HOME` (default `~/.config`).

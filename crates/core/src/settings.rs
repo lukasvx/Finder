@@ -6,20 +6,38 @@ use std::io;
 use crate::paths;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Theme {
+    /// Follow the desktop (KDE/GTK color scheme on Linux, app mode on Windows).
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Theme::Auto => "auto",
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+        }
+    }
+
+    fn parse(v: &str) -> Option<Theme> {
+        [Theme::Auto, Theme::Light, Theme::Dark].into_iter().find(|t| t.as_str().eq_ignore_ascii_case(v))
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     pub case_sensitive: bool,
     pub match_full_path: bool,
+    /// Show dotfiles (and, on Windows, files marked hidden) and everything below hidden folders.
+    pub show_hidden: bool,
+    /// Folder names (`node_modules`) or paths (`~/Downloads/old`) left out of results with everything below them.
+    pub exclude: Vec<String>,
+    pub theme: Theme,
 }
-
-pub const DEFAULT_FILE: &str = "\
-# Finder settings. Format: key = value; # starts a comment.
-
-# Match case exactly.
-case_sensitive = false
-
-# Match against the full path instead of the name only.
-match_full_path = false
-";
 
 fn parse_bool(v: &str) -> Option<bool> {
     match v.to_ascii_lowercase().as_str() {
@@ -45,20 +63,63 @@ impl Settings {
                 continue;
             };
             let (key, value) = (key.trim(), value.trim());
-            let slot = match key {
+            let invalid = || format!("line {n}: invalid value `{value}` for `{key}`, using default");
+            let flag = match key {
                 "case_sensitive" => &mut s.case_sensitive,
                 "match_full_path" => &mut s.match_full_path,
+                "show_hidden" => &mut s.show_hidden,
+                "exclude" => {
+                    s.exclude = split_list(value);
+                    continue;
+                }
+                "theme" => {
+                    match Theme::parse(value) {
+                        Some(t) => s.theme = t,
+                        None => warnings.push(invalid()),
+                    }
+                    continue;
+                }
                 _ => {
                     warnings.push(format!("line {n}: unknown key `{key}`"));
                     continue;
                 }
             };
             match parse_bool(value) {
-                Some(b) => *slot = b,
-                None => warnings.push(format!("line {n}: invalid value `{value}` for `{key}`, using default")),
+                Some(b) => *flag = b,
+                None => warnings.push(invalid()),
             }
         }
         (s, warnings)
+    }
+
+    /// The settings as file text, with a comment for each key.
+    pub fn to_text(&self) -> String {
+        format!(
+            "\
+# Finder settings. Format: key = value; # starts a comment.
+# Finder rewrites this file when settings are changed in the app.
+
+# Match case exactly.
+case_sensitive = {}
+
+# Match against the full path instead of the name only.
+match_full_path = {}
+
+# Show hidden files and folders (names starting with `.`; on Windows also files marked hidden).
+show_hidden = {}
+
+# Comma-separated folder names (node_modules) or paths (~/Downloads/old) to leave out of results.
+exclude = {}
+
+# Colors: auto (follow the desktop), light or dark.
+theme = {}
+",
+            self.case_sensitive,
+            self.match_full_path,
+            self.show_hidden,
+            self.exclude.join(", "),
+            self.theme.as_str()
+        )
     }
 
     /// Read the settings file, creating it with defaults if missing.
@@ -67,8 +128,7 @@ impl Settings {
         match fs::read_to_string(&path) {
             Ok(text) => Settings::parse(&text),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let created = fs::create_dir_all(paths::config_dir()).and_then(|_| fs::write(&path, DEFAULT_FILE));
-                let warnings = match created {
+                let warnings = match Settings::default().save() {
                     Ok(()) => Vec::new(),
                     Err(e) => vec![format!("cannot create {}: {e}", path.display())],
                 };
@@ -77,6 +137,21 @@ impl Settings {
             Err(e) => (Settings::default(), vec![format!("cannot read {}: {e}", path.display())]),
         }
     }
+
+    pub fn save(&self) -> io::Result<()> {
+        fs::create_dir_all(paths::config_dir())?;
+        fs::write(paths::settings_file(), self.to_text())
+    }
+
+    /// Exclusions as sent to the daemon: `~` expanded, empty entries dropped.
+    pub fn exclude_bytes(&self) -> Vec<Vec<u8>> {
+        self.exclude.iter().filter(|e| !e.is_empty()).map(|e| paths::to_bytes(&paths::expand_home(e))).collect()
+    }
+}
+
+/// Split a comma- or newline-separated list, trimming entries and dropping empty ones.
+pub fn split_list(s: &str) -> Vec<String> {
+    s.split([',', '\n']).map(str::trim).filter(|e| !e.is_empty()).map(String::from).collect()
 }
 
 #[cfg(test)]
@@ -85,17 +160,34 @@ mod tests {
 
     #[test]
     fn default_file_parses_to_defaults() {
-        assert_eq!(Settings::parse(DEFAULT_FILE), (Settings::default(), vec![]));
+        assert_eq!(Settings::parse(&Settings::default().to_text()), (Settings::default(), vec![]));
+    }
+
+    #[test]
+    fn round_trips() {
+        let s = Settings {
+            case_sensitive: true,
+            match_full_path: false,
+            show_hidden: true,
+            exclude: vec!["node_modules".into(), "~/Downloads/old stuff".into()],
+            theme: Theme::Dark,
+        };
+        assert_eq!(Settings::parse(&s.to_text()), (s, vec![]));
     }
 
     #[test]
     fn parses_values_and_warns() {
-        let (s, w) = Settings::parse("case_sensitive = yes # trailing\nmatch_full_path=maybe\nfoo = 1\njunk\n");
+        let (s, w) = Settings::parse(
+            "case_sensitive = yes # trailing\nmatch_full_path=maybe\nfoo = 1\njunk\nexclude = a, ,b\ntheme = neon\n",
+        );
         assert!(s.case_sensitive);
         assert!(!s.match_full_path);
-        assert_eq!(w.len(), 3);
+        assert_eq!(s.exclude, ["a", "b"]);
+        assert_eq!(s.theme, Theme::Auto);
+        assert_eq!(w.len(), 4);
         assert!(w[0].starts_with("line 2: invalid value"));
         assert!(w[1].starts_with("line 3: unknown key"));
         assert!(w[2].starts_with("line 4: expected"));
+        assert!(w[3].starts_with("line 6: invalid value"));
     }
 }

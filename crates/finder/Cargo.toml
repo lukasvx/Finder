@@ -5,6 +5,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Replays scripted clicks for UI checks (see src/uitest.rs). Not for release builds.
+uitest = []
+
 [dependencies]
 finder-core = { path = "../core" }
 fltk = { version = "1.5.23", features = ["use-wayland", "no-images"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Registry"] }

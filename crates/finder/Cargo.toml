@@ -1,0 +1,10 @@
+[package]
+name = "finder"
+description = "Finder UI: keyword prompt, result list, opens the file manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+finder-core = { path = "../core" }
+fltk = { version = "1.5.23", features = ["use-wayland", "no-images"] }

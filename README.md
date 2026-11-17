@@ -27,6 +27,21 @@ File manager: Dolphin (Linux), Explorer (Windows).
 | Index cache | `~/.cache/finder/index.bin` | `%LOCALAPPDATA%\Finder\index.bin` |
 | Settings | `~/.config/finder/settings.conf` | `%APPDATA%\Finder\settings.conf` |
 
+## Build
+
+```
+cargo build --release   # → target/release/finder, target/release/finderd
+cargo test
+```
+
+Fedora deps: `rust cargo gcc-c++ cmake libX11-devel libXext-devel libXft-devel libXinerama-devel libXcursor-devel libXrender-devel libXfixes-devel pango-devel cairo-devel wayland-devel wayland-protocols-devel libxkbcommon-devel dbus-devel mesa-libGL-devel`
+
+| Crate | Contents |
+|---|---|
+| `crates/core` | Paths, settings, IPC protocol |
+| `crates/finderd` | Daemon: index, scan, change listener, search |
+| `crates/finder` | UI |
+
 ## Settings
 
 Plain text, `key = value`, `#` comments. Created with defaults if missing; re-read on every `finder` launch.
@@ -44,8 +59,8 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 
 - [x] Idea, README, GitHub repo
 - [x] Architecture, language (Rust), UI toolkit (FLTK)
-- [ ] Project skeleton (`finderd` + `finder`)
-- [ ] Settings file
+- [x] Project skeleton (`finderd` + `finder`)
+- [x] Settings file
 - [ ] Index format + cache file
 - [ ] Initial scan: Linux
 - [ ] Initial scan: Windows
@@ -73,7 +88,6 @@ Planned design for features not built yet. Delete each point once implemented; a
   - Windows: USN journal (needs admin → run as service). Fallback: `ReadDirectoryChangesW` with subtree, per drive.
 - **Startup catch-up:** Linux: re-read only dirs whose mtime changed. Windows: resume USN journal from saved position.
 - **Updates:** changes go to an in-memory delta; merged into a new cache file when large or idle (temp file + atomic rename).
-- **Settings:** unknown keys or invalid values → warn, use default. Options are sent with each query.
 - **Search:**
   - Parallel SIMD substring scan over the (lowercased) name buffer.
   - Full-path mode: one linear pass propagating ancestor matches; keywords with separators matched component by component.

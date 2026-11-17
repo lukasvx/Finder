@@ -1,0 +1,8 @@
+[package]
+name = "finder-core"
+description = "Shared code for finder and finderd: paths, settings, IPC protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

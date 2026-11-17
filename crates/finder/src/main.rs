@@ -1,5 +1,7 @@
 //! `finder`: type a keyword, pick a match, the file manager opens there.
 
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod client;
 mod open;
 

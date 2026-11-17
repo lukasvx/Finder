@@ -10,7 +10,7 @@ use finder_core::paths;
 
 use crate::Shared;
 use crate::db::Db;
-use crate::index::Index;
+use crate::index::{Index, IndexBuilder};
 use crate::scan::{self, Exclusions};
 #[cfg(target_os = "linux")]
 use crate::watch::{self, Change};
@@ -44,6 +44,7 @@ pub fn run(shared: Arc<Shared>, rescan: bool) {
     lower_priority();
     let ex = Arc::new(Exclusions::system());
     let file = paths::index_file();
+    remove_stale_tmp_files();
     let cached =
         if rescan { None } else { Index::open(&file).map_err(|e| eprintln!("finderd: no usable cache: {e}")).ok() };
     let mut since = match cached {
@@ -143,12 +144,43 @@ fn full_scan(shared: &Shared, ex: &Exclusions) -> u64 {
     let t = Instant::now();
     let b = scan::scan_system(ex);
     eprintln!("finderd: scanned {} entries in {:.1?}", b.len(), t.elapsed());
-    let file = paths::index_file();
-    match b.write(&file, start).and_then(|_| Index::open(&file)) {
-        Ok(idx) => *shared.db.write().unwrap() = Some(Db::new(idx)),
-        Err(e) => eprintln!("finderd: cannot write {}: {e}", file.display()),
-    }
+    install(shared, &b, start);
     start
+}
+
+/// Delete `index.*.tmp` files left by an earlier run that crashed or could not rename them.
+fn remove_stale_tmp_files() {
+    let Ok(dir) = std::fs::read_dir(paths::cache_dir()) else { return };
+    for e in dir.filter_map(Result::ok) {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("index.") && name.ends_with(".tmp") {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// Write `b` as the new cache file and serve from it. Returns the number of entries on success.
+///
+/// The new file is mapped and swapped in before it replaces `index.bin`: Windows cannot replace a
+/// file that is still mapped, and dropping the old `Db` unmaps it.
+fn install(shared: &Shared, b: &IndexBuilder, scan_time: u64) -> Option<u32> {
+    let file = paths::index_file();
+    let opened = b.write_tmp(&file, scan_time).and_then(|tmp| Ok((Index::open(&tmp)?, tmp)));
+    let (idx, tmp) = match opened {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("finderd: cannot write {}: {e}", file.display());
+            return None;
+        }
+    };
+    let len = idx.view().len();
+    *shared.db.write().unwrap() = Some(Db::new(idx));
+    if let Err(e) = std::fs::rename(&tmp, &file) {
+        // Still served from the temp file; the next compaction tries again.
+        eprintln!("finderd: cannot replace {}: {e}", file.display());
+    }
+    Some(len)
 }
 
 /// Re-read directories modified since `since`.
@@ -177,12 +209,7 @@ fn compact(shared: &Shared, scan_time: u64) {
         Some(db) if db.delta_len() > 0 => db.compact(),
         _ => return,
     };
-    let file = paths::index_file();
-    match builder.write(&file, scan_time).and_then(|_| Index::open(&file)) {
-        Ok(idx) => {
-            eprintln!("finderd: compacted to {} entries", idx.view().len());
-            *shared.db.write().unwrap() = Some(Db::new(idx));
-        }
-        Err(e) => eprintln!("finderd: cannot write {}: {e}", file.display()),
+    if let Some(len) = install(shared, &builder, scan_time) {
+        eprintln!("finderd: compacted to {len} entries");
     }
 }

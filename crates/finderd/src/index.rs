@@ -9,7 +9,8 @@
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use bytemuck::{Pod, Zeroable};
 use finder_core::paths::SEP;
@@ -272,10 +273,19 @@ impl IndexBuilder {
 
     /// Write to `path` atomically (temp file + rename).
     pub fn write(&self, path: &Path, scan_time: u64) -> io::Result<()> {
+        let tmp = self.write_tmp(path, scan_time)?;
+        fs::rename(&tmp, path)
+    }
+
+    /// Write to a new temporary file next to `path` and return its name; renaming it to `path` is up to the caller.
+    /// Each call uses a fresh name, so a still-mapped earlier file is never truncated.
+    pub fn write_tmp(&self, path: &Path, scan_time: u64) -> io::Result<PathBuf> {
+        static SEQ: AtomicU32 = AtomicU32::new(0);
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
-        let tmp = path.with_extension("tmp");
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = path.with_extension(format!("{}-{seq}.tmp", std::process::id()));
         let header = Header {
             magic: MAGIC,
             version: VERSION,
@@ -292,7 +302,7 @@ impl IndexBuilder {
         w.write_all(&self.names)?;
         w.write_all(&self.lower)?;
         w.into_inner().map_err(|e| e.into_error())?.sync_all()?;
-        fs::rename(&tmp, path)
+        Ok(tmp)
     }
 }
 

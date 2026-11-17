@@ -4,6 +4,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(windows)]
+use std::process::Stdio;
 
 #[cfg(unix)]
 use finder_core::paths::{xdg_config_home, xdg_data_home};
@@ -35,6 +37,7 @@ fn quote(p: &Path) -> String {
     }
 }
 
+#[cfg(unix)]
 fn write(path: &Path, content: &str) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
@@ -94,17 +97,54 @@ pub fn uninstall() -> io::Result<()> {
 #[cfg(windows)]
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 
+/// Start-menu shortcut `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Finder.lnk`.
+#[cfg(windows)]
+fn shortcut_file() -> PathBuf {
+    let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_default();
+    appdata.join(r"Microsoft\Windows\Start Menu\Programs\Finder.lnk")
+}
+
+/// Quote a string for a PowerShell single-quoted literal.
+#[cfg(windows)]
+fn ps_quote(p: &Path) -> String {
+    format!("'{}'", p.to_string_lossy().replace('\'', "''"))
+}
+
 #[cfg(windows)]
 pub fn install() -> io::Result<()> {
-    let (daemon, _) = exe_paths()?;
+    let (daemon, ui) = exe_paths()?;
     let value = format!("\"{}\"", daemon.display());
     run(Command::new("reg").args(["add", RUN_KEY, "/v", "finderd", "/t", "REG_SZ", "/d", &value, "/f"]));
+    // Start the daemon now too, like `systemctl enable --now`; it logs to the file, not this console.
+    let log_file = finder_core::paths::cache_dir().join("finderd.log");
+    let log = fs::create_dir_all(finder_core::paths::cache_dir())
+        .and_then(|_| fs::OpenOptions::new().create(true).append(true).open(log_file));
+    let mut cmd = Command::new(&daemon);
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log.map_or_else(|_| Stdio::null(), Stdio::from));
+    if let Err(e) = cmd.spawn() {
+        eprintln!("finderd: cannot start {}: {e}", daemon.display());
+    }
+    if ui.is_file() {
+        let lnk = shortcut_file();
+        let script = format!(
+            "$s = (New-Object -ComObject WScript.Shell).CreateShortcut({}); $s.TargetPath = {}; \
+             $s.Description = 'Find files and folders by name'; $s.Save()",
+            ps_quote(&lnk),
+            ps_quote(&ui)
+        );
+        run(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]));
+    }
     Ok(())
 }
 
 #[cfg(windows)]
 pub fn uninstall() -> io::Result<()> {
     run(Command::new("reg").args(["delete", RUN_KEY, "/v", "finderd", "/f"]));
+    match fs::remove_file(shortcut_file()) {
+        Ok(()) => println!("removed {}", shortcut_file().display()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
     Ok(())
 }
 

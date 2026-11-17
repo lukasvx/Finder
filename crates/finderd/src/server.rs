@@ -1,4 +1,4 @@
-//! Local socket server: one thread per UI connection, each with its own `Searcher`.
+//! Local socket (Unix) / named pipe (Windows) server: one thread per UI connection, each with its own `Searcher`.
 
 use std::collections::HashSet;
 use std::io;
@@ -30,18 +30,43 @@ pub fn bind() -> io::Result<Listener> {
     UnixListener::bind(&path)
 }
 
+#[cfg(windows)]
+pub type Listener = finder_core::pipe::Listener;
+
+/// Bind the daemon pipe. Fails if another daemon is already listening.
+#[cfg(windows)]
+pub fn bind() -> io::Result<Listener> {
+    Listener::bind()
+}
+
 #[cfg(unix)]
 pub fn serve(listener: Listener, shared: Arc<Shared>) {
     for stream in listener.incoming() {
-        match stream {
-            Ok(mut s) => {
-                let shared = shared.clone();
-                thread::spawn(move || {
-                    let _ = handle(&mut s, &shared);
-                });
-            }
-            Err(e) => eprintln!("finderd: accept failed: {e}"),
+        spawn_handler(stream, &shared);
+    }
+}
+
+#[cfg(windows)]
+pub fn serve(mut listener: Listener, shared: Arc<Shared>) {
+    loop {
+        let stream = listener.accept();
+        if stream.is_err() {
+            // Avoid a busy loop if pipe creation keeps failing.
+            thread::sleep(std::time::Duration::from_millis(100));
         }
+        spawn_handler(stream, &shared);
+    }
+}
+
+fn spawn_handler<S: io::Read + io::Write + Send + 'static>(stream: io::Result<S>, shared: &Arc<Shared>) {
+    match stream {
+        Ok(mut s) => {
+            let shared = shared.clone();
+            thread::spawn(move || {
+                let _ = handle(&mut s, &shared);
+            });
+        }
+        Err(e) => eprintln!("finderd: accept failed: {e}"),
     }
 }
 

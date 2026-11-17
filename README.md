@@ -31,12 +31,15 @@ Measured (Linux, 12 cores, NVMe; `cargo test --release -p finderd -- --ignored -
 
 - Rust; UI with FLTK (`fltk-rs`), chosen for startup speed.
 - `finderd`: background daemon, autostarts at login. Scans the whole system on first start, caches the index on disk, keeps it current via file-change events, answers queries.
-- `finder`: short-lived UI. Reads settings, queries `finderd` over a local socket, opens the file manager, exits.
+- `finder`: short-lived UI. Reads settings, queries `finderd` over a local socket or named pipe, opens the file manager, exits.
 
 | | Linux | Windows |
 |---|---|---|
 | Index cache | `~/.cache/finder/index.bin` | `%LOCALAPPDATA%\Finder\index.bin` |
 | Settings | `~/.config/finder/settings.conf` | `%APPDATA%\Finder\settings.conf` |
+| IPC | Unix socket in `$XDG_RUNTIME_DIR`, mode 0600 | Named pipe `\\.\pipe\finder-<user SID>`, owner-only DACL |
+| Roots | `/` minus `/proc`, `/sys`, `/dev`, `/run` and non-local mounts | Fixed drives |
+| Live updates | inotify on `$HOME`; rest via 15-min catch-up | 15-min catch-up only (listener not built yet) |
 
 ## Build
 
@@ -44,6 +47,15 @@ Measured (Linux, 12 cores, NVMe; `cargo test --release -p finderd -- --ignored -
 cargo build --release   # → target/release/finder, target/release/finderd
 cargo test
 ```
+
+Windows build from Fedora (needs `mingw64-gcc mingw64-gcc-c++ mingw64-winpthreads-static rust-std-static-x86_64-pc-windows-gnu`; tests run under `wine`):
+
+```
+cargo build --release --target x86_64-pc-windows-gnu
+CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test --release --target x86_64-pc-windows-gnu -p finder-core
+```
+
+(`finderd`'s unit tests use Unix-style paths and don't run on Windows yet.)
 
 Run `finder [keyword]`; it starts `finderd` if needed (log: `~/.cache/finder/finderd.log`). `finderd --install` starts the daemon at login (systemd user service / Windows `Run` key) and adds a Finder app launcher; `--uninstall` undoes it. `finderd --rescan` forces a full scan.
 
@@ -80,13 +92,13 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 - [x] Settings file
 - [x] Index format + cache file
 - [x] Initial scan: Linux
-- [ ] Initial scan: Windows
+- [x] Initial scan: Windows (parallel directory walk)
 - [x] Change listener: Linux
 - [ ] Change listener: Windows
 - [x] Startup catch-up
 - [x] Delta + compaction
 - [x] Search engine
-- [x] Daemon ↔ UI IPC
+- [x] Daemon ↔ UI IPC (Unix socket / named pipe)
 - [x] UI: keyword prompt + result list
 - [x] Open Dolphin / Explorer
 - [x] Autostart `finderd`
@@ -97,9 +109,8 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 
 Planned design for features not built yet. Delete each point once implemented; after that the code is the reference.
 
-- **Initial scan (Windows):** read NTFS MFT (`FSCTL_ENUM_USN_DATA`, needs admin), fallback parallel walk.
+- **Initial scan (Windows):** faster path: read the NTFS MFT (`FSCTL_ENUM_USN_DATA`, needs admin); keep the directory walk as fallback.
 - **Change listener:**
   - Linux (now: inotify on every dir under `$HOME`, rest via 15-min mtime catch-up): add `fanotify` with `FAN_MARK_FILESYSTEM` when `CAP_SYS_ADMIN` is available, for instant system-wide updates (verify on btrfs subvolumes).
   - Windows: USN journal (needs admin → run as service). Fallback: `ReadDirectoryChangesW` with subtree, per drive.
 - **Startup catch-up (Windows):** resume USN journal from saved position.
-- **IPC (Windows):** named pipe, owner-only access (Linux: Unix socket in `$XDG_RUNTIME_DIR`, mode 0600).

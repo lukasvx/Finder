@@ -150,15 +150,20 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec
     out.into_iter().map(Option::unwrap).collect()
 }
 
-/// Roots of the whole system: `/` on Unix, fixed drives on Windows.
+/// Roots of the whole system: `/` on Unix, fixed drives on Windows (no network, removable or optical drives).
 fn add_roots(b: &mut IndexBuilder) {
     #[cfg(unix)]
     b.add_root(b"");
     #[cfg(windows)]
-    for letter in b'A'..=b'Z' {
-        let name = [letter, b':'];
-        if Path::new(&format!("{}:\\", letter as char)).is_dir() {
-            b.add_root(&name);
+    {
+        use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+        const DRIVE_FIXED: u32 = 3;
+        let mask = unsafe { GetLogicalDrives() };
+        for (bit, letter) in (b'A'..=b'Z').enumerate() {
+            let root: Vec<u16> = [letter as u16, b':' as u16, b'\\' as u16, 0].into();
+            if mask & (1 << bit) != 0 && unsafe { GetDriveTypeW(root.as_ptr()) } == DRIVE_FIXED {
+                b.add_root(&[letter, b':']);
+            }
         }
     }
 }
@@ -236,6 +241,7 @@ pub fn sync_dir(db: &mut Db, dir: Node, path: &[u8], ex: &Exclusions) {
 
 /// Path-or-node lookup helper for syncing a path that may not be in the database yet:
 /// syncs the nearest existing ancestor directory.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn sync_path(db: &mut Db, path: &[u8], ex: &Exclusions) {
     let mut p = path.to_vec();
     loop {

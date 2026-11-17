@@ -1,5 +1,7 @@
 //! `finderd`: background daemon that indexes all files and answers name queries.
 
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod db;
 mod fold;
 mod index;
@@ -39,6 +41,10 @@ Usage: finderd [--rescan | --install | --uninstall]
 ";
 
 fn main() {
+    #[cfg(windows)]
+    if env::args_os().len() > 1 {
+        win::attach_console();
+    }
     let mut rescan = false;
     for arg in env::args().skip(1) {
         match arg.as_str() {
@@ -67,27 +73,46 @@ fn main() {
         libc::umask(0o077);
     }
     let _ = std::fs::create_dir_all(paths::cache_dir());
-
-    #[cfg(unix)]
-    {
-        let listener = server::bind().unwrap_or_else(|e| {
-            eprintln!("finderd: {}: {e}", paths::socket_path().display());
-            // Another instance is not a failure (keeps systemd from restarting us).
-            process::exit(if e.kind() == std::io::ErrorKind::AddrInUse { 0 } else { 1 });
-        });
-        let shared = Arc::new(Shared {
-            db: RwLock::new(None),
-            indexing: AtomicBool::new(false),
-            recent: Mutex::new(Recent::load(paths::recent_file())),
-        });
-        let s = shared.clone();
-        thread::Builder::new().name("indexer".into()).spawn(move || indexer::run(s, rescan)).unwrap();
-        server::serve(listener, shared);
-    }
     #[cfg(windows)]
-    {
-        let _ = (rescan, Arc::new(()), thread::current());
-        eprintln!("finderd: Windows is not supported yet");
-        process::exit(1);
+    win::log_to_file_if_detached();
+
+    let listener = server::bind().unwrap_or_else(|e| {
+        eprintln!("finderd: cannot listen: {e}");
+        // Another instance is not a failure (keeps systemd from restarting us).
+        process::exit(if e.kind() == std::io::ErrorKind::AddrInUse { 0 } else { 1 });
+    });
+    let shared = Arc::new(Shared {
+        db: RwLock::new(None),
+        indexing: AtomicBool::new(false),
+        recent: Mutex::new(Recent::load(paths::recent_file())),
+    });
+    let s = shared.clone();
+    thread::Builder::new().name("indexer".into()).spawn(move || indexer::run(s, rescan)).unwrap();
+    server::serve(listener, shared);
+}
+
+/// finderd is a GUI-subsystem program on Windows so autostart opens no console window.
+#[cfg(windows)]
+mod win {
+    use std::os::windows::io::IntoRawHandle;
+
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, SetStdHandle,
+    };
+
+    /// Print to the console of the shell that ran us (for `--help`, `--install`, errors).
+    pub fn attach_console() {
+        unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+    }
+
+    /// Without a stderr handle (started at login, not by `finder`), log to `finderd.log`.
+    pub fn log_to_file_if_detached() {
+        if !unsafe { GetStdHandle(STD_ERROR_HANDLE) }.is_null() {
+            return;
+        }
+        let log = finder_core::paths::cache_dir().join("finderd.log");
+        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+            unsafe { SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle()) };
+        }
     }
 }

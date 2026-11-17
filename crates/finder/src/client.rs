@@ -40,7 +40,7 @@ type Stream = std::fs::File;
 
 #[cfg(windows)]
 fn connect() -> io::Result<Stream> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "Windows IPC not implemented yet"))
+    finder_core::pipe::connect()
 }
 
 /// Start `finderd` from next to this executable (or from `PATH`), detached, logging to the cache dir.
@@ -155,10 +155,15 @@ fn connect_or_spawn(tx: &app::Sender<Msg>) -> io::Result<Stream> {
     }
 }
 
-/// Tell the daemon a path was opened (for ranking). Best effort, short timeout.
+/// Tell the daemon a path was opened (for ranking). Best effort: waits at most 300 ms.
 pub fn notify_opened(path: &[u8]) {
-    let Ok(mut c) = connect() else { return };
-    #[cfg(unix)]
-    let _ = c.set_read_timeout(Some(Duration::from_millis(300)));
-    let _ = exchange(&mut c, &Request::Opened(path.to_vec()));
+    let req = Request::Opened(path.to_vec());
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        if let Ok(mut c) = connect() {
+            let _ = exchange(&mut c, &req);
+        }
+        let _ = done_tx.send(());
+    });
+    let _ = done_rx.recv_timeout(Duration::from_millis(300));
 }

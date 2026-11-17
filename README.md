@@ -122,3 +122,7 @@ Planned design for features not built yet. Delete each point once implemented; a
   - Linux (now: inotify on every dir under `$HOME`, rest via 15-min mtime catch-up): add `fanotify` with `FAN_MARK_FILESYSTEM` when `CAP_SYS_ADMIN` is available, for instant system-wide updates (verify on btrfs subvolumes).
   - Windows (now: `ReadDirectoryChangesW` per drive, affected dirs re-read from disk): optionally the USN journal (needs admin → run as service), which also survives daemon restarts.
 - **Startup catch-up (Windows):** resume USN journal from saved position.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

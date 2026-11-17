@@ -79,7 +79,7 @@ fn unescape_mountinfo(s: &str) -> Vec<u8> {
     out
 }
 
-fn flags_of(ft: FileType) -> u8 {
+pub fn flags_of(ft: FileType) -> u8 {
     if ft.is_dir() {
         FLAG_DIR
     } else if ft.is_symlink() {
@@ -192,7 +192,7 @@ pub fn scan_tree(b: &mut IndexBuilder, start: u32, ex: &Exclusions) {
 }
 
 /// Add everything below the (new, empty) directory `node` at `path` to the delta.
-fn add_subtree(db: &mut Db, node: Node, path: Vec<u8>, ex: &Exclusions) {
+pub fn add_subtree(db: &mut Db, node: Node, path: Vec<u8>, ex: &Exclusions) {
     let mut stack = vec![(node, path)];
     while let Some((dir, path)) = stack.pop() {
         if ex.contains(&path) {
@@ -345,5 +345,22 @@ mod tests {
     fn mountinfo_unescape() {
         assert_eq!(unescape_mountinfo(r"/mnt/my\040disk"), b"/mnt/my disk");
         assert!(Exclusions::system().contains(b"/proc"));
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    /// `cargo test --release -p finderd -- --ignored --nocapture catch_up_cost`
+    #[test]
+    #[ignore]
+    fn catch_up_cost() {
+        use super::*;
+        let idx = crate::index::Index::open(&finder_core::paths::index_file()).unwrap();
+        let db = Db::new(idx);
+        let ex = Exclusions::system();
+        let t = std::time::Instant::now();
+        let changed = changed_dirs(&db, u64::MAX, &ex);
+        let dirs = (0..db.view().len()).filter(|&i| db.view().is_dir(i)).count();
+        eprintln!("stat {dirs} dirs: {:?} ({} changed)", t.elapsed(), changed.len());
     }
 }

@@ -8,6 +8,8 @@ mod recent;
 mod scan;
 mod search;
 mod server;
+#[cfg(target_os = "linux")]
+mod watch;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};

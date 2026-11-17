@@ -66,7 +66,7 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 - [x] Index format + cache file
 - [x] Initial scan: Linux
 - [ ] Initial scan: Windows
-- [ ] Change listener: Linux
+- [x] Change listener: Linux
 - [ ] Change listener: Windows
 - [x] Startup catch-up
 - [x] Delta + compaction
@@ -84,8 +84,7 @@ Planned design for features not built yet. Delete each point once implemented; a
 
 - **Initial scan (Windows):** read NTFS MFT (`FSCTL_ENUM_USN_DATA`, needs admin), fallback parallel walk.
 - **Change listener:**
-  - Linux: `fanotify` with `FAN_MARK_FILESYSTEM` (needs `CAP_SYS_ADMIN`; verify it works on btrfs subvolumes). Fallback: inotify on `$HOME` + periodic dir-mtime rescan. No system-wide inotify (~1 KB kernel memory per watched dir).
+  - Linux (now: inotify on every dir under `$HOME`, rest via 15-min mtime catch-up): add `fanotify` with `FAN_MARK_FILESYSTEM` when `CAP_SYS_ADMIN` is available, for instant system-wide updates (verify on btrfs subvolumes).
   - Windows: USN journal (needs admin → run as service). Fallback: `ReadDirectoryChangesW` with subtree, per drive.
 - **Startup catch-up (Windows):** resume USN journal from saved position.
-- **Updates:** once the listener exists, compact when the delta is large or the daemon idle (now: after each catch-up pass, every 15 min).
 - **IPC (Windows):** named pipe, owner-only access (Linux: Unix socket in `$XDG_RUNTIME_DIR`, mode 0600).

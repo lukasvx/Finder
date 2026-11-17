@@ -1,9 +1,9 @@
 //! The indexer thread: the only writer of the database. Loads or builds the index,
-//! catches up on changes, and compacts the delta into a new cache file.
+//! applies watcher events, catches up on changes, and compacts the delta into a new cache file.
 
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use finder_core::paths;
@@ -11,10 +11,19 @@ use finder_core::paths;
 use crate::db::Db;
 use crate::index::Index;
 use crate::scan::{self, Exclusions};
+#[cfg(target_os = "linux")]
+use crate::watch::{self, Change};
 use crate::Shared;
 
-/// Interval between dir-mtime catch-up passes (until a change listener is in place).
+#[cfg(not(target_os = "linux"))]
+pub enum Change {}
+
+/// Interval between dir-mtime catch-up passes (covers everything the watcher does not).
 const CATCH_UP_EVERY: Duration = Duration::from_secs(15 * 60);
+/// Collect watcher events this long before applying them in one go.
+const BATCH_WINDOW: Duration = Duration::from_millis(200);
+/// Compact as soon as the delta has this many changes (bounds daemon heap).
+const COMPACT_AT: usize = 20_000;
 
 fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
@@ -33,7 +42,7 @@ fn lower_priority() {
 
 pub fn run(shared: Arc<Shared>, rescan: bool) {
     lower_priority();
-    let ex = Exclusions::system();
+    let ex = Arc::new(Exclusions::system());
     let file = paths::index_file();
     let cached = if rescan { None } else { Index::open(&file).map_err(|e| eprintln!("finderd: no usable cache: {e}")).ok() };
     let mut since = match cached {
@@ -50,13 +59,81 @@ pub fn run(shared: Arc<Shared>, rescan: bool) {
             since
         }
     };
+
+    let (tx, rx) = mpsc::channel::<Change>();
+    let mut tx = Some(tx);
+    let mut next_catch_up = Instant::now();
     loop {
-        let start = now_secs();
-        catch_up(&shared, since, &ex);
-        compact(&shared, start);
-        since = start;
-        thread::sleep(CATCH_UP_EVERY);
+        if Instant::now() >= next_catch_up {
+            let start = now_secs();
+            catch_up(&shared, since, &ex);
+            compact(&shared, start);
+            since = start;
+            next_catch_up = Instant::now() + CATCH_UP_EVERY;
+            // Start watching after the first catch-up, so the watch list matches the disk.
+            #[cfg(target_os = "linux")]
+            if let (Some(tx), Some(home)) = (tx.take(), std::env::var_os("HOME")) {
+                let home = paths::to_bytes(home.as_ref());
+                if let Err(e) = watch::spawn(shared.clone(), home, ex.clone(), tx) {
+                    eprintln!("finderd: cannot start watcher: {e}");
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            drop(tx.take());
+        }
+        let first = match rx.recv_timeout(next_catch_up.saturating_duration_since(Instant::now())) {
+            Ok(c) => c,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => {
+                std::thread::sleep(next_catch_up.saturating_duration_since(Instant::now()));
+                continue;
+            }
+        };
+        let mut batch = vec![first];
+        let deadline = Instant::now() + BATCH_WINDOW;
+        while let Ok(c) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            batch.push(c);
+        }
+        if apply(&shared, batch, &ex) {
+            catch_up(&shared, since, &ex);
+        }
+        if shared.db.read().unwrap().as_ref().is_some_and(|db| db.delta_len() >= COMPACT_AT) {
+            compact(&shared, since);
+        }
     }
+}
+
+/// Apply watcher events. Returns true if events were lost and a catch-up is needed.
+#[cfg(target_os = "linux")]
+fn apply(shared: &Shared, batch: Vec<Change>, ex: &Exclusions) -> bool {
+    let mut guard = shared.db.write().unwrap();
+    let Some(db) = guard.as_mut() else { return false };
+    let mut overflow = false;
+    for change in batch {
+        match change {
+            Change::Created { path, is_dir } => {
+                // Re-check the disk: the entry may already be gone again.
+                let Ok(meta) = std::fs::symlink_metadata(paths::from_bytes(&path)) else { continue };
+                let flags = scan::flags_of(meta.file_type());
+                let before = db.lookup(&path);
+                match db.insert(&path, flags) {
+                    Some(n) if is_dir && before != Some(n) => scan::add_subtree(db, n, path, ex),
+                    Some(_) => {}
+                    None => scan::sync_path(db, &path, ex),
+                }
+            }
+            Change::Removed { path } => {
+                db.remove(&path);
+            }
+            Change::Overflow => overflow = true,
+        }
+    }
+    overflow
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply(_: &Shared, batch: Vec<Change>, _: &Exclusions) -> bool {
+    batch.into_iter().next().is_some_and(|c| match c {})
 }
 
 /// Scan everything into a new cache file; returns the scan start time.

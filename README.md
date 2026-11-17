@@ -62,12 +62,12 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 - [x] Project skeleton (`finderd` + `finder`)
 - [x] Settings file
 - [x] Index format + cache file
-- [ ] Initial scan: Linux
+- [x] Initial scan: Linux
 - [ ] Initial scan: Windows
 - [ ] Change listener: Linux
 - [ ] Change listener: Windows
-- [ ] Startup catch-up
-- [ ] Delta + compaction
+- [x] Startup catch-up
+- [x] Delta + compaction
 - [x] Search engine
 - [ ] Daemon ↔ UI IPC
 - [ ] UI: keyword prompt + result list
@@ -80,13 +80,12 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 
 Planned design for features not built yet. Delete each point once implemented; after that the code is the reference.
 
-- **Initial scan:** Linux: parallel directory walk. Windows: read NTFS MFT (`FSCTL_ENUM_USN_DATA`, needs admin), fallback parallel walk.
-- **Exclusions:** `/proc`, `/sys`, `/dev`, `/run`, network/other mounts, `/.snapshots`.
+- **Initial scan (Windows):** read NTFS MFT (`FSCTL_ENUM_USN_DATA`, needs admin), fallback parallel walk.
 - **Change listener:**
   - Linux: `fanotify` with `FAN_MARK_FILESYSTEM` (needs `CAP_SYS_ADMIN`; verify it works on btrfs subvolumes). Fallback: inotify on `$HOME` + periodic dir-mtime rescan. No system-wide inotify (~1 KB kernel memory per watched dir).
   - Windows: USN journal (needs admin → run as service). Fallback: `ReadDirectoryChangesW` with subtree, per drive.
-- **Startup catch-up:** Linux: re-read only dirs whose mtime changed. Windows: resume USN journal from saved position.
-- **Updates:** changes go to an in-memory delta; merged into a new cache file when large or idle (temp file + atomic rename).
+- **Startup catch-up (Windows):** resume USN journal from saved position.
+- **Updates:** once the listener exists, compact when the delta is large or the daemon idle (now: after each catch-up pass, every 15 min).
 - **Search (UI side):** drop stale queries on each keystroke; UI renders only visible rows.
 - **IPC:** Unix socket / named pipe, owner-only access.
 - **Open file manager:** Linux: `dolphin --select <file>` / `dolphin <dir>`, fallback D-Bus `org.freedesktop.FileManager1.ShowItems`, then `xdg-open`. Windows: `explorer /select,"<file>"` / `explorer "<dir>"`.

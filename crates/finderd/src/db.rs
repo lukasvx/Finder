@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::fold::fold;
 use crate::index::{FLAG_DIR, Index, IndexBuilder, NONE, View, join_path, split_path};
@@ -39,6 +40,13 @@ impl Bitset {
     }
 }
 
+/// Source of generation numbers, unique across `Db` instances (compaction creates a new one).
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn next_generation() -> u64 {
+    GENERATION.fetch_add(1, Ordering::Relaxed) + 1
+}
+
 pub struct Db {
     base: Index,
     removed: HashSet<u32>,
@@ -58,7 +66,7 @@ impl Db {
             nodes: Vec::new(),
             kids: HashMap::new(),
             hidden: OnceLock::new(),
-            generation: 0,
+            generation: next_generation(),
         }
     }
 
@@ -81,7 +89,7 @@ impl Db {
     }
 
     fn changed(&mut self) {
-        self.generation += 1;
+        self.generation = next_generation();
         self.hidden = OnceLock::new();
     }
 

@@ -61,14 +61,14 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 - [x] Architecture, language (Rust), UI toolkit (FLTK)
 - [x] Project skeleton (`finderd` + `finder`)
 - [x] Settings file
-- [ ] Index format + cache file
+- [x] Index format + cache file
 - [ ] Initial scan: Linux
 - [ ] Initial scan: Windows
 - [ ] Change listener: Linux
 - [ ] Change listener: Windows
 - [ ] Startup catch-up
 - [ ] Delta + compaction
-- [ ] Search engine
+- [x] Search engine
 - [ ] Daemon ↔ UI IPC
 - [ ] UI: keyword prompt + result list
 - [ ] Open Dolphin / Explorer
@@ -80,7 +80,6 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 
 Planned design for features not built yet. Delete each point once implemented; after that the code is the reference.
 
-- **Index format:** fixed 12-byte record per entry (parent `u32`, name offset `u32`, name length `u16`, flags `u8`), parent-before-child order. Names packed in one buffer plus a lowercased copy. No stored full paths. Cache file is memory-mapped.
 - **Initial scan:** Linux: parallel directory walk. Windows: read NTFS MFT (`FSCTL_ENUM_USN_DATA`, needs admin), fallback parallel walk.
 - **Exclusions:** `/proc`, `/sys`, `/dev`, `/run`, network/other mounts, `/.snapshots`.
 - **Change listener:**
@@ -88,11 +87,6 @@ Planned design for features not built yet. Delete each point once implemented; a
   - Windows: USN journal (needs admin → run as service). Fallback: `ReadDirectoryChangesW` with subtree, per drive.
 - **Startup catch-up:** Linux: re-read only dirs whose mtime changed. Windows: resume USN journal from saved position.
 - **Updates:** changes go to an in-memory delta; merged into a new cache file when large or idle (temp file + atomic rename).
-- **Search:**
-  - Parallel SIMD substring scan over the (lowercased) name buffer.
-  - Full-path mode: one linear pass propagating ancestor matches; keywords with separators matched component by component.
-  - Cancel on each keystroke; narrow existing results when the keyword is extended.
-  - Stream the first ~100 results; UI renders only visible rows.
-  - Rank: exact > prefix > substring, then shorter path, then recently opened.
+- **Search (UI side):** drop stale queries on each keystroke; UI renders only visible rows.
 - **IPC:** Unix socket / named pipe, owner-only access.
 - **Open file manager:** Linux: `dolphin --select <file>` / `dolphin <dir>`, fallback D-Bus `org.freedesktop.FileManager1.ShowItems`, then `xdg-open`. Windows: `explorer /select,"<file>"` / `explorer "<dir>"`.

@@ -4,6 +4,7 @@ mod db;
 mod fold;
 mod index;
 mod indexer;
+mod install;
 mod recent;
 mod scan;
 mod search;
@@ -29,13 +30,27 @@ pub struct Shared {
     pub recent: Mutex<Recent>,
 }
 
-const USAGE: &str = "Usage: finderd [--rescan]\n\n  --rescan   ignore the cached index and scan everything again\n";
+const USAGE: &str = "\
+Usage: finderd [--rescan | --install | --uninstall]
+
+  --rescan     ignore the cached index and scan everything again
+  --install    start finderd at login and add the Finder app launcher
+  --uninstall  undo --install
+";
 
 fn main() {
     let mut rescan = false;
     for arg in env::args().skip(1) {
         match arg.as_str() {
             "--rescan" => rescan = true,
+            "--install" | "--uninstall" => {
+                let r = if arg == "--install" { install::install() } else { install::uninstall() };
+                if let Err(e) = r {
+                    eprintln!("finderd: {e}");
+                    process::exit(1);
+                }
+                return;
+            }
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return;
@@ -57,7 +72,8 @@ fn main() {
     {
         let listener = server::bind().unwrap_or_else(|e| {
             eprintln!("finderd: {}: {e}", paths::socket_path().display());
-            process::exit(1);
+            // Another instance is not a failure (keeps systemd from restarting us).
+            process::exit(if e.kind() == std::io::ErrorKind::AddrInUse { 0 } else { 1 });
         });
         let shared = Arc::new(Shared {
             db: RwLock::new(None),

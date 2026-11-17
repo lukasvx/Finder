@@ -34,7 +34,7 @@ cargo build --release   # → target/release/finder, target/release/finderd
 cargo test
 ```
 
-Run `finder [keyword]`; it starts `finderd` if needed (log: `~/.cache/finder/finderd.log`). `finderd --rescan` forces a full scan.
+Run `finder [keyword]`; it starts `finderd` if needed (log: `~/.cache/finder/finderd.log`). `finderd --install` starts the daemon at login (systemd user service / Windows `Run` key) and adds a Finder app launcher; `--uninstall` undoes it. `finderd --rescan` forces a full scan.
 
 Fedora deps: `rust cargo gcc-c++ libstdc++-static cmake libX11-devel libXext-devel libXft-devel libXinerama-devel libXcursor-devel libXrender-devel libXfixes-devel pango-devel cairo-devel wayland-devel wayland-protocols-devel libxkbcommon-devel dbus-devel mesa-libGL-devel`
 
@@ -74,7 +74,7 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 - [x] Daemon ↔ UI IPC
 - [x] UI: keyword prompt + result list
 - [x] Open Dolphin / Explorer
-- [ ] Autostart `finderd`
+- [x] Autostart `finderd`
 - [ ] Benchmark RAM and latency against goals
 - [ ] Packaging
 

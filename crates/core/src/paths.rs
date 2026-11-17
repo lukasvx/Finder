@@ -18,6 +18,18 @@ fn home() -> PathBuf {
     env_dir("HOME").unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// `$XDG_CONFIG_HOME` (default `~/.config`).
+#[cfg(unix)]
+pub fn xdg_config_home() -> PathBuf {
+    env_dir("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config"))
+}
+
+/// `$XDG_DATA_HOME` (default `~/.local/share`).
+#[cfg(unix)]
+pub fn xdg_data_home() -> PathBuf {
+    env_dir("XDG_DATA_HOME").unwrap_or_else(|| home().join(".local/share"))
+}
+
 /// Directory holding the index cache.
 pub fn cache_dir() -> PathBuf {
     #[cfg(unix)]
@@ -29,7 +41,7 @@ pub fn cache_dir() -> PathBuf {
 /// Directory holding `settings.conf`.
 pub fn config_dir() -> PathBuf {
     #[cfg(unix)]
-    return env_dir("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config")).join("finder");
+    return xdg_config_home().join("finder");
     #[cfg(windows)]
     return env_dir("APPDATA").unwrap_or_else(env::temp_dir).join("Finder");
 }

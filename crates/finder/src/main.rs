@@ -12,16 +12,18 @@ use finder_core::settings::Settings;
 use fltk::browser::BrowserScrollbar;
 use fltk::enums::{Align, CallbackTrigger, Color, Event, Font, Key};
 use fltk::prelude::*;
-use fltk::{app, browser::HoldBrowser, frame::Frame, input::Input, window::Window};
+use fltk::{app, browser::HoldBrowser, button::Button, draw, frame::Frame, input::Input, window::Window};
 
 use crate::client::{Client, Msg};
 
-/// Hits requested per query; the list scrolls through these.
+/// Hits requested per query; the list scrolls through these. "Show All" lifts the limit.
 const LIMIT: u32 = 1000;
 const W: i32 = 780;
 const H: i32 = 480;
 const PAD: i32 = 8;
 const NAME_COL: i32 = 280;
+const STATUS_H: i32 = 26;
+const MORE_W: i32 = 64;
 /// Format char for browser lines; `@` (the default) can appear in file names.
 const FMT: char = '\x01';
 
@@ -42,6 +44,13 @@ fn plural(n: u64) -> String {
     format!("{n} match{}", if n == 1 { "" } else { "es" })
 }
 
+/// Put the "Show All" button right after the status text, in a window of height `win_h`.
+fn place_more(more: &mut Button, status: &Frame, win_h: i32) {
+    draw::set_font(status.label_font(), status.label_size());
+    let (text_w, _) = draw::measure(&status.label(), false);
+    more.resize(PAD + text_w + 12, win_h - STATUS_H - PAD + 3, MORE_W, STATUS_H - 6);
+}
+
 /// Move the list selection by `delta` rows, keeping it visible.
 fn move_selection(list: &mut HoldBrowser, delta: i32) {
     let n = list.size();
@@ -60,34 +69,58 @@ fn main() {
     let app = app::App::default().with_scheme(app::Scheme::Gtk);
     app::set_visible_focus(false);
     let (tx, rx) = app::channel::<Msg>();
-    let client = Client::start(tx);
+    let client = Rc::new(Client::start(tx));
 
     let mut win = Window::default().with_size(W, H).with_label("Finder");
     win.set_xclass("finder");
     let mut input = Input::new(PAD, PAD, W - 2 * PAD, 34, None);
     input.set_text_size(17);
     input.set_trigger(CallbackTrigger::Changed);
-    let mut list = HoldBrowser::new(PAD, 34 + 2 * PAD, W - 2 * PAD, H - 34 - 26 - 4 * PAD, None);
+    let mut list = HoldBrowser::new(PAD, 34 + 2 * PAD, W - 2 * PAD, H - 34 - STATUS_H - 4 * PAD, None);
     list.set_text_size(14);
     list.set_format_char(FMT);
     list.set_column_char('\t');
     list.set_column_widths(&[NAME_COL]);
     list.set_has_scrollbar(BrowserScrollbar::Vertical);
     list.set_selection_color(Color::from_rgb(0x3d, 0xae, 0xe9));
-    let mut status = Frame::new(PAD, H - 26 - PAD, W - 2 * PAD, 26, None);
+    let mut status = Frame::new(PAD, H - STATUS_H - PAD, W - 2 * PAD, STATUS_H, None);
     status.set_align(Align::Left | Align::Inside);
     status.set_label_size(12);
     status.set_label_font(Font::Helvetica);
     if let Some(w) = warnings.first() {
         status.set_label(&format!("{}: {w}", paths::settings_file().display()));
     }
+    let mut more = Button::new(0, 0, MORE_W, STATUS_H - 6, "Show All");
+    more.set_label_size(12);
+    more.hide();
     win.resizable(&list);
     win.end();
+    win.resize_callback({
+        let (mut more, status) = (more.clone(), status.clone());
+        move |_, _, _, _, h| place_more(&mut more, &status, h)
+    });
     win.show();
     let _ = input.take_focus();
 
     let hits: Rc<RefCell<Vec<Hit>>> = Rc::default();
     let seq = Rc::new(Cell::new(0u64));
+
+    // Send the current keyword with `limit`; newer replies supersede older ones.
+    let run_query = {
+        let (client, seq, input) = (client.clone(), seq.clone(), input.clone());
+        move |limit: u32| {
+            seq.set(seq.get() + 1);
+            client.search(
+                seq.get(),
+                Query {
+                    text: input.value(),
+                    case_sensitive: settings.case_sensitive,
+                    full_path: settings.match_full_path,
+                    limit,
+                },
+            );
+        }
+    };
 
     let open_selected = {
         let (hits, list, mut status) = (hits.clone(), list.clone(), status.clone());
@@ -104,25 +137,28 @@ fn main() {
     };
 
     input.set_callback({
-        let (seq, mut list, mut status, hits) = (seq.clone(), list.clone(), status.clone(), hits.clone());
+        let (seq, mut list, mut status, hits, mut more) =
+            (seq.clone(), list.clone(), status.clone(), hits.clone(), more.clone());
+        let run_query = run_query.clone();
         move |i| {
-            seq.set(seq.get() + 1);
-            let text = i.value();
-            if text.is_empty() {
+            more.hide();
+            if i.value().is_empty() {
+                seq.set(seq.get() + 1);
                 hits.borrow_mut().clear();
                 list.clear();
                 status.set_label("");
                 return;
             }
-            client.search(
-                seq.get(),
-                Query {
-                    text,
-                    case_sensitive: settings.case_sensitive,
-                    full_path: settings.match_full_path,
-                    limit: LIMIT,
-                },
-            );
+            run_query(LIMIT);
+        }
+    });
+
+    more.set_callback({
+        let mut input = input.clone();
+        move |b| {
+            b.hide();
+            run_query(u32::MAX);
+            let _ = input.take_focus();
         }
     });
 
@@ -178,16 +214,26 @@ fn main() {
                     list.select(1);
                 }
                 let mut text = plural(total);
-                if total > new.len() as u64 {
+                let truncated = total > new.len() as u64;
+                if truncated {
                     text += &format!(", showing best {}", new.len());
                 }
                 if indexing {
                     text = format!("Indexing… {text} so far");
                 }
                 status.set_label(&text);
+                if truncated {
+                    place_more(&mut more, &status, win.h());
+                    more.show();
+                } else {
+                    more.hide();
+                }
                 *hits.borrow_mut() = new;
             }
-            Msg::Status(text) => status.set_label(&text),
+            Msg::Status(text) => {
+                status.set_label(&text);
+                more.hide();
+            }
         }
     }
 }

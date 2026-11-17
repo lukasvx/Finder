@@ -12,9 +12,6 @@ use crate::Shared;
 use crate::db::Node;
 use crate::search::{Options, Searcher};
 
-/// Upper bound on hits per response.
-const MAX_LIMIT: u32 = 10_000;
-
 #[cfg(unix)]
 pub type Listener = std::os::unix::net::UnixListener;
 
@@ -58,7 +55,22 @@ fn handle<S: io::Read + io::Write>(stream: &mut S, shared: &Shared) -> io::Resul
                 Response::Ok
             }
         };
+        let big = matches!(&resp, Response::Results { hits, .. } if hits.len() > TRIM_AFTER);
         resp.send(stream)?;
+        if big {
+            drop(resp);
+            trim_heap();
+        }
+    }
+}
+
+/// Responses with more hits than this ("Show All") are followed by returning freed memory to the OS.
+const TRIM_AFTER: usize = 10_000;
+
+fn trim_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
     }
 }
 
@@ -70,7 +82,7 @@ fn search(shared: &Shared, searcher: &mut Searcher, q: &Query) -> Response {
     };
     let recent: HashSet<Node> = shared.recent.lock().unwrap().nodes(db);
     let opts = Options { case_sensitive: q.case_sensitive, full_path: q.full_path };
-    let out = searcher.search(db, &q.text, opts, q.limit.min(MAX_LIMIT) as usize, &recent);
+    let out = searcher.search(db, &q.text, opts, q.limit as usize, &recent);
     let hits = out.hits.iter().map(|&n| Hit { is_dir: db.is_dir(n), path: db.path(n) }).collect();
     Response::Results { total: out.total as u64, indexing, hits }
 }

@@ -34,7 +34,9 @@ cargo build --release   # → target/release/finder, target/release/finderd
 cargo test
 ```
 
-Fedora deps: `rust cargo gcc-c++ cmake libX11-devel libXext-devel libXft-devel libXinerama-devel libXcursor-devel libXrender-devel libXfixes-devel pango-devel cairo-devel wayland-devel wayland-protocols-devel libxkbcommon-devel dbus-devel mesa-libGL-devel`
+Run `finder [keyword]`; it starts `finderd` if needed (log: `~/.cache/finder/finderd.log`). `finderd --rescan` forces a full scan.
+
+Fedora deps: `rust cargo gcc-c++ libstdc++-static cmake libX11-devel libXext-devel libXft-devel libXinerama-devel libXcursor-devel libXrender-devel libXfixes-devel pango-devel cairo-devel wayland-devel wayland-protocols-devel libxkbcommon-devel dbus-devel mesa-libGL-devel`
 
 | Crate | Contents |
 |---|---|
@@ -69,9 +71,9 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 - [x] Startup catch-up
 - [x] Delta + compaction
 - [x] Search engine
-- [ ] Daemon ↔ UI IPC
-- [ ] UI: keyword prompt + result list
-- [ ] Open Dolphin / Explorer
+- [x] Daemon ↔ UI IPC
+- [x] UI: keyword prompt + result list
+- [x] Open Dolphin / Explorer
 - [ ] Autostart `finderd`
 - [ ] Benchmark RAM and latency against goals
 - [ ] Packaging
@@ -86,6 +88,4 @@ Planned design for features not built yet. Delete each point once implemented; a
   - Windows: USN journal (needs admin → run as service). Fallback: `ReadDirectoryChangesW` with subtree, per drive.
 - **Startup catch-up (Windows):** resume USN journal from saved position.
 - **Updates:** once the listener exists, compact when the delta is large or the daemon idle (now: after each catch-up pass, every 15 min).
-- **Search (UI side):** drop stale queries on each keystroke; UI renders only visible rows.
-- **IPC:** Unix socket / named pipe, owner-only access.
-- **Open file manager:** Linux: `dolphin --select <file>` / `dolphin <dir>`, fallback D-Bus `org.freedesktop.FileManager1.ShowItems`, then `xdg-open`. Windows: `explorer /select,"<file>"` / `explorer "<dir>"`.
+- **IPC (Windows):** named pipe, owner-only access (Linux: Unix socket in `$XDG_RUNTIME_DIR`, mode 0600).

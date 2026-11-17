@@ -12,10 +12,10 @@ use crate::Shared;
 use crate::db::Db;
 use crate::index::{Index, IndexBuilder};
 use crate::scan::{self, Exclusions};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use crate::watch::{self, Change};
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub enum Change {}
 
 /// Interval between dir-mtime catch-up passes (covers everything the watcher does not).
@@ -64,6 +64,16 @@ pub fn run(shared: Arc<Shared>, rescan: bool) {
 
     let (tx, rx) = mpsc::channel::<Change>();
     let mut tx = Some(tx);
+    // Windows: one subtree watch per drive needs no directory list, so start it before the first
+    // catch-up; that pass then covers whatever changed before the watch was live.
+    #[cfg(windows)]
+    if let Some(tx) = tx.take() {
+        let roots = match &*shared.db.read().unwrap() {
+            Some(db) => (0..db.view().root_count).map(|r| db.view().name(r).to_vec()).collect(),
+            None => Vec::new(),
+        };
+        watch::spawn(roots, tx);
+    }
     let mut next_catch_up = Instant::now();
     loop {
         if Instant::now() >= next_catch_up {
@@ -80,7 +90,7 @@ pub fn run(shared: Arc<Shared>, rescan: bool) {
                     eprintln!("finderd: cannot start watcher: {e}");
                 }
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", windows)))]
             drop(tx.take());
         }
         let first = match rx.recv_timeout(next_catch_up.saturating_duration_since(Instant::now())) {
@@ -133,7 +143,30 @@ fn apply(shared: &Shared, batch: Vec<Change>, ex: &Exclusions) -> bool {
     overflow
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Apply watcher events by re-reading each affected parent directory once per batch.
+#[cfg(windows)]
+fn apply(shared: &Shared, batch: Vec<Change>, ex: &Exclusions) -> bool {
+    let mut overflow = false;
+    let mut dirs = std::collections::BTreeSet::new();
+    for change in batch {
+        match change {
+            Change::Changed { path } => {
+                if let Some((parent, _)) = crate::db::split_last(&path) {
+                    dirs.insert(parent.to_vec());
+                }
+            }
+            Change::Overflow => overflow = true,
+        }
+    }
+    let mut guard = shared.db.write().unwrap();
+    let Some(db) = guard.as_mut() else { return false };
+    for dir in dirs {
+        scan::sync_path(db, &dir, ex);
+    }
+    overflow
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 fn apply(_: &Shared, batch: Vec<Change>, _: &Exclusions) -> bool {
     batch.into_iter().next().is_some_and(|c| match c {})
 }

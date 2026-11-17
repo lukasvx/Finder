@@ -39,7 +39,7 @@ Measured (Linux, 12 cores, NVMe; `cargo test --release -p finderd -- --ignored -
 | Settings | `~/.config/finder/settings.conf` | `%APPDATA%\Finder\settings.conf` |
 | IPC | Unix socket in `$XDG_RUNTIME_DIR`, mode 0600 | Named pipe `\\.\pipe\finder-<user SID>`, owner-only DACL |
 | Roots | `/` minus `/proc`, `/sys`, `/dev`, `/run` and non-local mounts | Fixed drives |
-| Live updates | inotify on `$HOME`; rest via 15-min catch-up | 15-min catch-up only (listener not built yet) |
+| Live updates | inotify on `$HOME`; rest via 15-min catch-up | `ReadDirectoryChangesW` on every drive; 15-min catch-up as safety net |
 
 ## Build
 
@@ -55,7 +55,7 @@ cargo build --release --target x86_64-pc-windows-gnu
 CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test --release --target x86_64-pc-windows-gnu -p finder-core
 ```
 
-(`finderd`'s unit tests use Unix-style paths and don't run on Windows yet.)
+(Most `finderd` unit tests use Unix-style paths and don't run on Windows yet; `-p finderd watch` does.)
 
 Run `finder [keyword]`; it starts `finderd` if needed (log: `~/.cache/finder/finderd.log`). `finderd --install` starts the daemon at login (systemd user service / Windows `Run` key) and adds a Finder app launcher; `--uninstall` undoes it. `finderd --rescan` forces a full scan.
 
@@ -94,7 +94,7 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 - [x] Initial scan: Linux
 - [x] Initial scan: Windows (parallel directory walk)
 - [x] Change listener: Linux
-- [ ] Change listener: Windows
+- [x] Change listener: Windows
 - [x] Startup catch-up
 - [x] Delta + compaction
 - [x] Search engine
@@ -112,5 +112,5 @@ Planned design for features not built yet. Delete each point once implemented; a
 - **Initial scan (Windows):** faster path: read the NTFS MFT (`FSCTL_ENUM_USN_DATA`, needs admin); keep the directory walk as fallback.
 - **Change listener:**
   - Linux (now: inotify on every dir under `$HOME`, rest via 15-min mtime catch-up): add `fanotify` with `FAN_MARK_FILESYSTEM` when `CAP_SYS_ADMIN` is available, for instant system-wide updates (verify on btrfs subvolumes).
-  - Windows: USN journal (needs admin → run as service). Fallback: `ReadDirectoryChangesW` with subtree, per drive.
+  - Windows (now: `ReadDirectoryChangesW` per drive, affected dirs re-read from disk): optionally the USN journal (needs admin → run as service), which also survives daemon restarts.
 - **Startup catch-up (Windows):** resume USN journal from saved position.

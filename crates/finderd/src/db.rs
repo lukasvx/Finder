@@ -210,9 +210,21 @@ impl Db {
         let (root, comps) = split_path(path)?;
         let mut cur = Node::Base(self.view().find_root(root)?);
         for c in comps {
-            cur = self.child(cur, c)?;
+            cur = self.child(cur, c).or_else(|| self.child_ignore_case(cur, c))?;
         }
         Some(cur)
+    }
+
+    /// Windows names are case-insensitive: a path may arrive in a different case than on disk.
+    #[cfg(windows)]
+    fn child_ignore_case(&self, dir: Node, name: &[u8]) -> Option<Node> {
+        let want = fold(name);
+        self.children(dir).into_iter().find(|&c| self.lower_name(c) == want.as_slice())
+    }
+
+    #[cfg(not(windows))]
+    fn child_ignore_case(&self, _: Node, _: &[u8]) -> Option<Node> {
+        None
     }
 
     /// Add `name` with `flags` under `parent` (a live directory). Replaces an existing child

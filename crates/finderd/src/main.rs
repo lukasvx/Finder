@@ -13,6 +13,9 @@ mod search;
 mod server;
 #[cfg(target_os = "linux")]
 mod watch;
+#[cfg(windows)]
+#[path = "watch_windows.rs"]
+mod watch;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};

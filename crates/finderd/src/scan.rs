@@ -241,7 +241,6 @@ pub fn sync_dir(db: &mut Db, dir: Node, path: &[u8], ex: &Exclusions) {
 
 /// Path-or-node lookup helper for syncing a path that may not be in the database yet:
 /// syncs the nearest existing ancestor directory.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn sync_path(db: &mut Db, path: &[u8], ex: &Exclusions) {
     let mut p = path.to_vec();
     loop {

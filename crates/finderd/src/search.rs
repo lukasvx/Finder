@@ -1,6 +1,9 @@
 //! Substring search over the name buffers, ranking, and narrowing of previous results.
+//!
+//! Scanning and ranking run in parallel over chunks of the index; each chunk keeps only its
+//! best `limit` hits in a bounded heap, so a query allocates at most 4 bytes per match.
 
-use std::collections::HashSet;
+use std::collections::{BinaryHeap, HashSet};
 use std::ops::Range;
 use std::thread;
 
@@ -23,11 +26,17 @@ pub struct Outcome {
     pub hits: Vec<Node>,
 }
 
+/// Match lists larger than this are not kept for narrowing.
+const CACHE_MAX: usize = 1 << 20;
+/// Below this many items a scan runs on the calling thread.
+const PARALLEL_MIN: usize = 1 << 16;
+
 struct Cache {
     generation: u64,
     opts: Options,
     needle: Vec<u8>,
-    matches: Vec<Node>,
+    base: Vec<u32>,
+    delta: Vec<Node>,
 }
 
 /// Per-connection search state; remembers the last match set to narrow it when the keyword grows.
@@ -36,15 +45,100 @@ pub struct Searcher {
     cache: Option<Cache>,
 }
 
+/// Rank key, smaller is better: match kind (exact name, prefix, substring, path only),
+/// depth, not recently opened, name length. Final ties are broken by path.
+type Key = (u8, u8, bool, usize);
+
+struct Ranker<'a> {
+    db: &'a Db,
+    v: View<'a>,
+    needle: &'a [u8],
+    opts: Options,
+    recent: &'a HashSet<Node>,
+}
+
+impl Ranker<'_> {
+    fn hay(&self) -> &[u8] {
+        if self.opts.case_sensitive { self.v.names } else { self.v.lower }
+    }
+
+    fn base_name(&self, i: u32) -> &[u8] {
+        if self.opts.case_sensitive { self.v.name(i) } else { self.v.lower_name(i) }
+    }
+
+    fn kind(&self, name: &[u8]) -> u8 {
+        if name == self.needle {
+            0
+        } else if name.starts_with(self.needle) {
+            1
+        } else if !self.opts.full_path || memmem::find(name, self.needle).is_some() {
+            2
+        } else {
+            3
+        }
+    }
+
+    fn base_key(&self, i: u32) -> Key {
+        let name = self.base_name(i);
+        let recent = !self.recent.is_empty() && self.recent.contains(&Node::Base(i));
+        (self.kind(name), self.v.entry(i).depth, !recent, name.len())
+    }
+
+    fn key(&self, n: Node) -> Key {
+        match n {
+            Node::Base(i) => self.base_key(i),
+            Node::Delta(_) => {
+                let name = name_of(self.db, n, self.opts);
+                (self.kind(name), self.db.depth(n), !self.recent.contains(&n), name.len())
+            }
+        }
+    }
+}
+
+/// The `k` smallest (key, node) pairs pushed.
+struct TopK {
+    k: usize,
+    heap: BinaryHeap<(Key, Node)>,
+}
+
+impl TopK {
+    fn new(k: usize) -> Self {
+        TopK { k, heap: BinaryHeap::new() }
+    }
+
+    fn push(&mut self, key: Key, n: Node) {
+        if self.heap.len() < self.k {
+            self.heap.push((key, n));
+        } else if self.heap.peek().is_some_and(|top| (key, n) < *top) {
+            self.heap.pop();
+            self.heap.push((key, n));
+        }
+    }
+
+    fn merge(&mut self, other: TopK) {
+        for (key, n) in other.heap {
+            self.push(key, n);
+        }
+    }
+}
+
+/// Matches of one query: base ids (ascending), live delta nodes, and the best hits among them.
+struct Found {
+    base: Vec<u32>,
+    delta: Vec<Node>,
+    top: TopK,
+}
+
 impl Searcher {
     pub fn search(&mut self, db: &Db, query: &str, opts: Options, limit: usize, recent: &HashSet<Node>) -> Outcome {
         let raw: Vec<u8> = query.bytes().filter(|&b| b != 0).collect();
         let needle = if opts.case_sensitive { raw } else { fold(&raw) };
-        if needle.is_empty() {
-            self.cache = None;
+        let cache = self.cache.take();
+        if needle.is_empty() || limit == 0 {
             return Outcome { total: 0, hits: Vec::new() };
         }
-        let matches = match self.cache.take() {
+        let r = Ranker { db, v: db.view(), needle: &needle, opts, recent };
+        let mut found = match cache {
             // A keyword containing the previous one matches a subset of its results.
             Some(c)
                 if c.generation == db.generation()
@@ -53,15 +147,23 @@ impl Searcher {
                     && memmem::find(&needle, &c.needle).is_some() =>
             {
                 let f = memmem::Finder::new(&needle);
-                c.matches.into_iter().filter(|&n| f.find(name_of(db, n, opts)).is_some()).collect()
+                let (base, top) = rank_ids(&r, &c.base, limit, true, |i| f.find(r.base_name(i)).is_some());
+                let delta = c.delta.into_iter().filter(|&n| f.find(name_of(db, n, opts)).is_some()).collect();
+                Found { base, delta, top }
             }
-            _ if opts.full_path => path_matches(db, &needle, opts),
-            _ => name_matches(db, &needle, opts),
+            _ if opts.full_path => path_matches(&r, limit),
+            _ => name_matches(&r, limit),
         };
-        let total = matches.len();
-        let hits = rank(db, &matches, &needle, opts, limit, recent);
-        self.cache = Some(Cache { generation: db.generation(), opts, needle, matches });
-        Outcome { total, hits }
+        for &n in &found.delta {
+            found.top.push(r.key(n), n);
+        }
+        let total = found.base.len() + found.delta.len();
+        let mut hits: Vec<(Key, Vec<u8>, Node)> = found.top.heap.into_iter().map(|(k, n)| (k, db.path(n), n)).collect();
+        hits.sort_unstable();
+        if !opts.full_path && found.base.len() <= CACHE_MAX {
+            self.cache = Some(Cache { generation: db.generation(), opts, needle, base: found.base, delta: found.delta });
+        }
+        Outcome { total, hits: hits.into_iter().map(|(_, _, n)| n).collect() }
     }
 }
 
@@ -73,66 +175,131 @@ fn visible(hidden: Option<&Bitset>, i: u32) -> bool {
     hidden.is_none_or(|h| !h.get(i))
 }
 
-/// Ids of base entries whose name in `hay` contains `needle`, ascending. Runs in parallel.
-pub fn scan(v: View, hay: &[u8], needle: &[u8]) -> Vec<u32> {
-    let n = v.len();
-    let threads = thread::available_parallelism().map_or(1, |t| t.get()).min(8) as u32;
-    if threads <= 1 || hay.len() < (1 << 20) {
-        return scan_range(v, hay, needle, 0..n);
+/// Split `0..len` into chunks processed on up to 8 threads; results in chunk order.
+fn par_ranges<R: Send>(len: usize, f: impl Fn(Range<usize>) -> R + Sync) -> Vec<R> {
+    let threads = if len < PARALLEL_MIN { 1 } else { thread::available_parallelism().map_or(1, |t| t.get()).min(8) };
+    if threads <= 1 {
+        return vec![f(0..len)];
     }
-    let chunk = n.div_ceil(threads);
+    let chunk = len.div_ceil(threads);
     thread::scope(|s| {
+        let f = &f;
         let handles: Vec<_> = (0..threads)
             .map(|t| {
-                let ids = (t * chunk).min(n)..((t + 1) * chunk).min(n);
-                s.spawn(move || scan_range(v, hay, needle, ids))
+                let r = (t * chunk).min(len)..((t + 1) * chunk).min(len);
+                s.spawn(move || f(r))
             })
             .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
     })
 }
 
-fn scan_range(v: View, hay: &[u8], needle: &[u8], ids: Range<u32>) -> Vec<u32> {
-    let mut out = Vec::new();
-    if ids.is_empty() {
-        return out;
+/// Entry whose name covers byte `pos`, searching forward from `from` (whose name starts at or before `pos`).
+fn entry_from(v: View, pos: usize, from: u32) -> u32 {
+    let e = v.entries;
+    let (mut lo, mut hi, mut step) = (from as usize, from as usize + 1, 1);
+    while hi < e.len() && e[hi].name_off as usize <= pos {
+        lo = hi;
+        step *= 2;
+        hi += step;
     }
-    let finder = memmem::Finder::new(needle);
+    let hi = hi.min(e.len());
+    (lo + e[lo..hi].partition_point(|x| x.name_off as usize <= pos) - 1) as u32
+}
+
+/// Call `f(id)` once for each entry in `ids` matched by `finder`. Names are `\0`-terminated;
+/// `lead` is 1 when the pattern starts with the `\0` before a name (prefix/exact patterns).
+fn scan_range(v: View, hay: &[u8], finder: &memmem::Finder, lead: usize, ids: Range<u32>, mut f: impl FnMut(u32)) {
+    if ids.is_empty() {
+        return;
+    }
     let end = v.name_start(ids.end);
-    let mut pos = v.name_start(ids.start);
-    // Names are `\0`-terminated and the needle has no `\0`, so a match lies within one name.
+    let mut pos = v.name_start(ids.start).saturating_sub(lead);
+    let mut cur = ids.start;
     while pos < end {
         let Some(off) = finder.find(&hay[pos..end]) else { break };
-        let id = v.entry_at(pos + off);
-        out.push(id);
-        pos = v.name_start(id + 1);
+        let id = entry_from(v, pos + off + lead, cur);
+        f(id);
+        cur = id + 1;
+        pos = v.name_start(id + 1).saturating_sub(lead);
     }
-    out
 }
 
-fn name_matches(db: &Db, needle: &[u8], opts: Options) -> Vec<Node> {
-    let v = db.view();
-    let hay = if opts.case_sensitive { v.names } else { v.lower };
-    let hidden = db.hidden();
-    let mut out: Vec<Node> = scan(v, hay, needle).into_iter().filter(|&i| visible(hidden, i)).map(Node::Base).collect();
-    let f = memmem::Finder::new(needle);
-    out.extend(db.delta_nodes().filter(|&n| f.find(name_of(db, n, opts)).is_some() && db.is_live(n)));
-    out
+/// All base entries matched by `pattern` (see `scan_range`), ascending.
+fn scan_ids(r: &Ranker, pattern: &[u8], lead: usize) -> Vec<u32> {
+    let finder = memmem::Finder::new(pattern);
+    let hay = r.hay();
+    par_ranges(r.v.len() as usize, |c| {
+        let mut ids = Vec::new();
+        scan_range(r.v, hay, &finder, lead, c.start as u32..c.end as u32, |id| ids.push(id));
+        ids
+    })
+    .concat()
 }
 
-/// Entries whose full path contains `needle`. A keyword with separators is matched component
+/// Rank `ids` that pass `keep`; also returns the kept ids if `collect`.
+fn rank_ids(r: &Ranker, ids: &[u32], limit: usize, collect: bool, keep: impl Fn(u32) -> bool + Sync) -> (Vec<u32>, TopK) {
+    let parts = par_ranges(ids.len(), |c| {
+        let mut kept = Vec::new();
+        let mut top = TopK::new(limit);
+        for &i in &ids[c] {
+            if keep(i) {
+                if collect {
+                    kept.push(i);
+                }
+                top.push(r.base_key(i), Node::Base(i));
+            }
+        }
+        (kept, top)
+    });
+    let mut top = TopK::new(limit);
+    let mut kept = Vec::new();
+    for (k, t) in parts {
+        kept.extend(k);
+        top.merge(t);
+    }
+    (kept, top)
+}
+
+fn name_matches(r: &Ranker, limit: usize) -> Found {
+    let finder = memmem::Finder::new(r.needle);
+    let hay = r.hay();
+    let hidden = r.db.hidden();
+    let parts = par_ranges(r.v.len() as usize, |c| {
+        let mut ids = Vec::new();
+        let mut top = TopK::new(limit);
+        scan_range(r.v, hay, &finder, 0, c.start as u32..c.end as u32, |id| {
+            if visible(hidden, id) {
+                ids.push(id);
+                top.push(r.base_key(id), Node::Base(id));
+            }
+        });
+        (ids, top)
+    });
+    let mut found = Found { base: Vec::new(), delta: Vec::new(), top: TopK::new(limit) };
+    for (ids, top) in parts {
+        found.base.extend(ids);
+        found.top.merge(top);
+    }
+    found.delta = r
+        .db
+        .delta_nodes()
+        .filter(|&n| finder.find(name_of(r.db, n, r.opts)).is_some() && r.db.is_live(n))
+        .collect();
+    found
+}
+
+/// Entries whose full path contains the needle. A keyword with separators is matched component
 /// by component: `a/b/c` = a name ending in `a`, then a child named `b`, then one starting with `c`.
-fn path_matches(db: &Db, needle: &[u8], opts: Options) -> Vec<Node> {
-    let v = db.view();
-    let cs = opts.case_sensitive;
-    let hay = if cs { v.names } else { v.lower };
-    let name = |i: u32| if cs { v.name(i) } else { v.lower_name(i) };
+fn path_matches(r: &Ranker, limit: usize) -> Found {
+    let v = r.v;
+    let needle = r.needle;
     let pieces: Vec<&[u8]> = needle.split(|&b| b == b'/' || b == SEP).collect();
     let m = pieces.len() - 1;
     let trailing = m > 0 && pieces[m].is_empty();
     let mut anchor = Bitset::new(v.len());
     if m == 0 {
-        for i in scan(v, hay, needle) {
+        for i in scan_ids(r, needle, 0) {
             anchor.set(i);
         }
     } else {
@@ -143,15 +310,21 @@ fn path_matches(db: &Db, needle: &[u8], opts: Options) -> Vec<Node> {
             j if j == m => nm.starts_with(pieces[m]),
             j => nm == pieces[j],
         };
-        let candidates: Vec<u32> = if pieces[k].is_empty() { (0..v.len()).collect() } else { scan(v, hay, pieces[k]) };
+        let candidates: Vec<u32> = if k == 0 {
+            // Name ends with the piece: `piece\0`.
+            if pieces[0].is_empty() { (0..v.len()).collect() } else { scan_ids(r, &[pieces[0], b"\0"].concat(), 0) }
+        } else if k == m {
+            // Name starts with the piece: `\0piece`.
+            scan_ids(r, &[b"\0", pieces[m]].concat(), 1)
+        } else {
+            // Name equals the piece: `\0piece\0`.
+            scan_ids(r, &[b"\0", pieces[k], b"\0"].concat(), 1)
+        };
         'cand: for c in candidates {
-            if !piece_ok(k, name(c)) {
-                continue;
-            }
             let mut cur = c;
             for j in (0..k).rev() {
                 cur = v.entry(cur).parent;
-                if cur == NONE || !piece_ok(j, name(cur)) {
+                if cur == NONE || !piece_ok(j, r.base_name(cur)) {
                     continue 'cand;
                 }
             }
@@ -159,9 +332,9 @@ fn path_matches(db: &Db, needle: &[u8], opts: Options) -> Vec<Node> {
         }
     }
     // Everything below an anchor matches; with a trailing separator the anchor itself does not.
-    let hidden = db.hidden();
+    let hidden = r.db.hidden();
     let mut carry = Bitset::new(v.len());
-    let mut out = Vec::new();
+    let mut base = Vec::new();
     for i in 0..v.len() {
         let p = v.entry(i).parent;
         let inherited = p != NONE && carry.get(p);
@@ -169,45 +342,23 @@ fn path_matches(db: &Db, needle: &[u8], opts: Options) -> Vec<Node> {
         if a || inherited {
             carry.set(i);
             if (inherited || !trailing) && visible(hidden, i) {
-                out.push(Node::Base(i));
+                base.push(i);
             }
         }
     }
+    drop((anchor, carry));
+    let (_, top) = rank_ids(r, &base, limit, false, |_| true);
     let f = memmem::Finder::new(needle);
-    for n in db.delta_nodes() {
-        let path = db.path(n);
-        let path = if cs { path } else { fold(&path) };
-        if f.find(&path).is_some() && db.is_live(n) {
-            out.push(n);
-        }
-    }
-    out
-}
-
-/// Best `limit` matches: exact name > prefix > substring, then shallower, then recently opened,
-/// then shorter name, then path.
-fn rank(db: &Db, matches: &[Node], needle: &[u8], opts: Options, limit: usize, recent: &HashSet<Node>) -> Vec<Node> {
-    let key = |n: Node| {
-        let name = name_of(db, n, opts);
-        let kind = if name == needle {
-            0u8
-        } else if name.starts_with(needle) {
-            1
-        } else if !opts.full_path || memmem::find(name, needle).is_some() {
-            2
-        } else {
-            3
-        };
-        (kind, db.depth(n), !recent.contains(&n), name.len())
-    };
-    let mut keyed: Vec<_> = matches.iter().map(|&n| (key(n), n)).collect();
-    if keyed.len() > limit {
-        keyed.select_nth_unstable(limit);
-        keyed.truncate(limit);
-    }
-    let mut with_path: Vec<_> = keyed.into_iter().map(|(k, n)| (k, db.path(n), n)).collect();
-    with_path.sort_unstable();
-    with_path.into_iter().map(|(_, _, n)| n).collect()
+    let delta = r
+        .db
+        .delta_nodes()
+        .filter(|&n| {
+            let path = r.db.path(n);
+            let path = if r.opts.case_sensitive { path } else { fold(&path) };
+            f.find(&path).is_some() && r.db.is_live(n)
+        })
+        .collect();
+    Found { base, delta, top }
 }
 
 #[cfg(test)]
@@ -288,6 +439,47 @@ mod tests {
         assert_eq!(run(&db, &mut s, "todo", false, true).0, 0);
     }
 
+    /// Large enough to run in parallel chunks; compares against a naive scan of full paths.
+    #[test]
+    fn matches_naive_on_large_tree() {
+        use crate::index::{Index, IndexBuilder};
+        let parts = [b"Ab".as_slice(), b"a", b"ab", b"abc", b"b", b"ba", b"c"]; // sorted
+        let mut b = IndexBuilder::new();
+        b.add_root(b"");
+        let mut i = 0;
+        while b.len() < 150_000 {
+            if b.view().is_dir(i) {
+                let depth = b.view().entry(i).depth;
+                for (k, p) in parts.iter().enumerate() {
+                    let dir = depth < 7 && (k + i as usize) % 3 != 0;
+                    b.push(i, &[*p, &[b'0' + (i % 7) as u8]].concat(), if dir { FLAG_DIR } else { 0 });
+                }
+            }
+            i += 1;
+        }
+        let dir = crate::index::tests::temp_dir("search-large");
+        let file = dir.join("index.bin");
+        b.write(&file, 0).unwrap();
+        let db = Db::new(Index::open(&file).unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+        let v = db.view();
+        let paths: Vec<Vec<u8>> = (0..v.len()).map(|i| v.path(i)).collect();
+        for (q, full) in [("ab", false), ("c3", false), ("a", true), ("ab1/b", true), ("/a", true), ("c2/", true), ("b2/ba", true)] {
+            let out = Searcher::default().search(&db, q, Options { case_sensitive: false, full_path: full }, usize::MAX, &HashSet::new());
+            let mut got: Vec<u32> = out.hits.iter().map(|&n| match n { Node::Base(i) => i, Node::Delta(_) => unreachable!() }).collect();
+            got.sort();
+            let needle = q.to_lowercase();
+            let want: Vec<u32> = (0..v.len())
+                .filter(|&i| {
+                    let hay = if full { fold(&paths[i as usize]) } else { v.lower_name(i).to_vec() };
+                    memmem::find(&hay, needle.as_bytes()).is_some()
+                })
+                .collect();
+            assert_eq!(out.total, want.len(), "query {q}");
+            assert_eq!(got, want, "query {q}");
+        }
+    }
+
     #[test]
     fn limit_keeps_best() {
         let db = db_from(TREE, "search-limit");
@@ -295,5 +487,75 @@ mod tests {
         assert!(out.total > 2);
         assert_eq!(out.hits.len(), 2);
         assert_eq!(db.path(out.hits[0]), b"/usr/share");
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use crate::index::{Index, IndexBuilder};
+    use std::time::Instant;
+
+    fn rss_anon_kb() -> u64 {
+        let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        s.lines().find(|l| l.starts_with("RssAnon:")).and_then(|l| l.split_whitespace().nth(1)?.parse().ok()).unwrap_or(0)
+    }
+
+    /// Five copies of the real cached index under `/copyN`: ~2M entries.
+    /// `cargo test --release -p finderd -- --ignored --nocapture search_2m`
+    #[test]
+    #[ignore]
+    fn search_2m() {
+        let real = Index::open(&finder_core::paths::index_file()).unwrap();
+        let v = real.view();
+        let mut b = IndexBuilder::new();
+        b.add_root(b"");
+        let mut queue: Vec<(u32, u32)> = Vec::new();
+        for k in 0..5 {
+            let id = b.push(0, format!("copy{k}").as_bytes(), crate::index::FLAG_DIR);
+            queue.push((0, id));
+        }
+        let mut i = 0;
+        while i < queue.len() {
+            let (orig, new) = queue[i];
+            for c in v.children(orig) {
+                let id = b.push(new, v.name(c), v.entry(c).flags);
+                if v.is_dir(c) {
+                    queue.push((c, id));
+                }
+            }
+            i += 1;
+        }
+        drop(queue);
+        let file = std::env::temp_dir().join("finderd-bench-2m.bin");
+        b.write(&file, 0).unwrap();
+        let n = b.len();
+        drop(b);
+        let size = std::fs::metadata(&file).unwrap().len();
+        let db = Db::new(Index::open(&file).unwrap());
+        eprintln!("{n} entries, {} MB file, {:.1} B/entry", size >> 20, size as f64 / n as f64);
+        let anon0 = rss_anon_kb();
+        for (q, full) in [("a", false), ("e", false), ("mai", false), ("main.rs", false), ("readme", false),
+                          ("zzzzqq", false), ("src/", true), ("finder/c", true), ("lib", false), ("README.md", false)] {
+            let mut times = Vec::new();
+            let mut total = 0;
+            for _ in 0..5 {
+                let t = Instant::now();
+                let out = Searcher::default().search(&db, q, Options { case_sensitive: false, full_path: full }, 1000, &HashSet::new());
+                times.push(t.elapsed());
+                total = out.total;
+            }
+            times.sort();
+            eprintln!("{q:>10} full={full:<5} median {:>7.2?}  total {total}", times[2]);
+        }
+        // Typing "readme" one key at a time on one connection (narrowing).
+        let mut s = Searcher::default();
+        let t = Instant::now();
+        for k in 1..=6 {
+            s.search(&db, &"readme"[..k], Options::default(), 1000, &HashSet::new());
+        }
+        eprintln!("typing 'readme' (6 queries, narrowing): {:?}", t.elapsed());
+        eprintln!("anon RSS grew {} MB during queries (incl. narrowing cache)", (rss_anon_kb().saturating_sub(anon0)) >> 10);
+        std::fs::remove_file(&file).unwrap();
     }
 }

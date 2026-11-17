@@ -16,6 +16,17 @@ File manager: Dolphin (Linux), Explorer (Windows).
 - Daemon: heap < 20 MB, index ~50 B per entry, ~0% CPU when idle.
 - One codebase for Linux and Windows.
 
+Measured (Linux, 12 cores, NVMe; `cargo test --release -p finderd -- --ignored --nocapture`):
+
+| | Result |
+|---|---|
+| Window first frame after launch | ~67 ms |
+| Query on 2.2M entries | 5–25 ms (single letter, full path included) |
+| Full scan, 434k entries | 0.3 s |
+| Catch-up pass, 35k dirs | 42 ms |
+| Daemon anon RSS (idle / during queries) | ~5 MB / +9 MB |
+| Index size | 59 B/entry |
+
 ## Architecture
 
 - Rust; UI with FLTK (`fltk-rs`), chosen for startup speed.
@@ -75,7 +86,7 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 - [x] UI: keyword prompt + result list
 - [x] Open Dolphin / Explorer
 - [x] Autostart `finderd`
-- [ ] Benchmark RAM and latency against goals
+- [x] Benchmark RAM and latency against goals
 - [ ] Packaging
 
 ## Implementation notes

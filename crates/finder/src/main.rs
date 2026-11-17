@@ -99,6 +99,13 @@ fn main() {
         let (mut more, status) = (more.clone(), status.clone());
         move |_, _, _, _, h| place_more(&mut more, &status, h)
     });
+    // Close when the window loses focus, so `finder` never lingers in the background.
+    win.handle(|_, ev| {
+        if ev == Event::Unfocus {
+            app::quit();
+        }
+        false
+    });
     win.show();
     let _ = input.take_focus();
 

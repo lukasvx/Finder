@@ -49,6 +49,10 @@ Run `finder [keyword]`; it starts `finderd` if needed (log: `~/.cache/finder/fin
 
 Fedora deps: `rust cargo gcc-c++ libstdc++-static cmake libX11-devel libXext-devel libXft-devel libXinerama-devel libXcursor-devel libXrender-devel libXfixes-devel pango-devel cairo-devel wayland-devel wayland-protocols-devel libxkbcommon-devel dbus-devel mesa-libGL-devel`
 
+### KRunner (Linux/KDE only)
+
+`integrations/krunner/install.sh` adds a KRunner entry `Search "…" on Finder` to every query; Enter runs `finder <query>`. Needs `python3-dbus` and `python3-gobject`; `--uninstall` removes it. Windows has no equivalent plugin: `finderd --install` adds a Start-menu launcher there.
+
 | Crate | Contents |
 |---|---|
 | `crates/core` | Paths, settings, IPC protocol |

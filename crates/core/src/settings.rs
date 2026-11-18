@@ -3,7 +3,7 @@
 use std::fs;
 use std::io;
 
-use crate::paths;
+use crate::{hotkey, paths};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Theme {
@@ -37,6 +37,8 @@ pub struct Settings {
     /// Folder names (`node_modules`) or paths (`~/Downloads/old`) left out of results with everything below them.
     pub exclude: Vec<String>,
     pub theme: Theme,
+    /// Windows: global shortcut that opens `finder`, such as `ctrl+alt+space`; empty for none.
+    pub hotkey: String,
 }
 
 fn parse_bool(v: &str) -> Option<bool> {
@@ -79,6 +81,14 @@ impl Settings {
                     }
                     continue;
                 }
+                "hotkey" => {
+                    if value.is_empty() || hotkey::parse(value).is_some() {
+                        s.hotkey = value.to_ascii_lowercase();
+                    } else {
+                        warnings.push(invalid());
+                    }
+                    continue;
+                }
                 _ => {
                     warnings.push(format!("line {n}: unknown key `{key}`"));
                     continue;
@@ -113,12 +123,17 @@ exclude = {}
 
 # Colors: auto (follow the desktop), light or dark.
 theme = {}
+
+# Windows: global shortcut that opens Finder, such as ctrl+alt+space or win+shift+f; empty for none.
+# (On Linux, bind the `finder` command in the desktop's shortcut settings instead.)
+hotkey = {}
 ",
             self.case_sensitive,
             self.match_full_path,
             self.show_hidden,
             self.exclude.join(", "),
-            self.theme.as_str()
+            self.theme.as_str(),
+            self.hotkey
         )
     }
 
@@ -171,6 +186,7 @@ mod tests {
             show_hidden: true,
             exclude: vec!["node_modules".into(), "~/Downloads/old stuff".into()],
             theme: Theme::Dark,
+            hotkey: "ctrl+alt+space".into(),
         };
         assert_eq!(Settings::parse(&s.to_text()), (s, vec![]));
     }
@@ -178,16 +194,18 @@ mod tests {
     #[test]
     fn parses_values_and_warns() {
         let (s, w) = Settings::parse(
-            "case_sensitive = yes # trailing\nmatch_full_path=maybe\nfoo = 1\njunk\nexclude = a, ,b\ntheme = neon\n",
+            "case_sensitive = yes # trailing\nmatch_full_path=maybe\nfoo = 1\njunk\nexclude = a, ,b\ntheme = neon\nhotkey = ctrl+nope\n",
         );
         assert!(s.case_sensitive);
         assert!(!s.match_full_path);
         assert_eq!(s.exclude, ["a", "b"]);
         assert_eq!(s.theme, Theme::Auto);
-        assert_eq!(w.len(), 4);
+        assert_eq!(s.hotkey, "");
+        assert_eq!(w.len(), 5);
         assert!(w[0].starts_with("line 2: invalid value"));
         assert!(w[1].starts_with("line 3: unknown key"));
         assert!(w[2].starts_with("line 4: expected"));
         assert!(w[3].starts_with("line 6: invalid value"));
+        assert!(w[4].starts_with("line 7: invalid value"));
     }
 }

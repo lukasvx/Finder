@@ -1,6 +1,7 @@
 //! Code shared by `finder` (UI) and `finderd` (daemon).
 
 pub mod fold;
+pub mod hotkey;
 pub mod paths;
 #[cfg(windows)]
 pub mod pipe;

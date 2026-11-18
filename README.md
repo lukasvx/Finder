@@ -84,12 +84,9 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 | `show_hidden` | `false` | Show hidden entries (names starting with `.`; on Windows also the hidden attribute) and everything below hidden folders |
 | `exclude` | (empty) | Comma-separated folder names (`node_modules`, any depth, case-insensitive) or paths (`~/Downloads/old`) left out of results with everything below them |
 | `theme` | `auto` | `auto` follows the desktop (KDE color scheme and accent / GTK dark preference; Windows app mode and accent), or `light` / `dark` |
+| `hotkey` | (empty) | Windows: global shortcut that opens `finder`, e.g. `ctrl+alt+space`, `win+shift+f`, `f12`. Registered by `finderd` (picks up edits live), so it opens instantly; a `.lnk` shortcut key goes through Explorer, which can stall ~3 s per hung window. Linux: bind `finder` in the desktop's shortcut settings |
 
 Hidden files and exclusions are filtered at query time, so they stay in the index and changes apply immediately.
-
-## Deferred
-
-- Global keyboard shortcut to launch `finder`.
 
 ## Progress
 

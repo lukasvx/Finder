@@ -3,6 +3,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod db;
+#[cfg(windows)]
+mod hotkey;
 mod index;
 mod indexer;
 mod install;
@@ -90,6 +92,8 @@ fn main() {
     });
     let s = shared.clone();
     thread::Builder::new().name("indexer".into()).spawn(move || indexer::run(s, rescan)).unwrap();
+    #[cfg(windows)]
+    hotkey::spawn();
     server::serve(listener, shared);
 }
 

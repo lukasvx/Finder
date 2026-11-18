@@ -16,9 +16,9 @@ mod uitest;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use finder_core::{hotkey, paths};
 use finder_core::proto::{Hit, Query};
-use finder_core::settings::{Settings, Theme, split_list};
+use finder_core::settings::{Settings, Theme, ZOOM_RANGE, split_list};
+use finder_core::{hotkey, paths};
 use fltk::button::{Button, CheckButton, RadioRoundButton, ToggleButton};
 use fltk::enums::{Align, CallbackTrigger, Event, Font, FrameType, Key, Shortcut};
 use fltk::frame::Frame;
@@ -47,6 +47,8 @@ const HOTKEY_HINT: &str = "Opens Finder from anywhere, e.g. ctrl+alt+space, win+
 type Pal = Rc<Cell<Palette>>;
 /// A callback bound after the widgets it needs exist.
 type Slot<F> = Rc<RefCell<Option<Rc<F>>>>;
+/// Opens a hit; the flag says it is a program to run.
+type OpenFn = dyn Fn(&Hit, bool);
 
 fn plural(n: u64) -> String {
     format!("{n} match{}", if n == 1 { "" } else { "es" })
@@ -410,10 +412,40 @@ impl Chrome {
     }
 }
 
+/// Window zoom: FLTK's own Ctrl +/- / Ctrl+0 scaling, stored in percent of the display scaling.
+struct Zoom {
+    /// Display scaling per screen, before the zoom.
+    base: Vec<f32>,
+}
+
+impl Zoom {
+    /// Scale every screen by `percent` on top of its display scaling.
+    fn apply(percent: u16) -> Zoom {
+        // The display scaling is known only once the display is open.
+        unsafe { fltk_sys::fl::Fl_open_display() };
+        let base: Vec<f32> = (0..app::screen_count()).map(app::screen_scale).collect();
+        if percent != 100 {
+            for (n, b) in base.iter().enumerate() {
+                app::set_screen_scale(n as i32, b * percent as f32 / 100.0);
+            }
+        }
+        Zoom { base }
+    }
+
+    /// The current zoom of the screen `win` is on, in percent.
+    fn percent(&self, win: &Window) -> u16 {
+        let n = win.screen_num();
+        let base = self.base.get(n as usize).copied().unwrap_or(1.0);
+        let pct = (app::screen_scale(n) / base * 100.0).round() as u16;
+        pct.clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end())
+    }
+}
+
 fn main() {
     let (settings, warnings) = Settings::load();
     let settings = Rc::new(RefCell::new(settings));
     let app = app::App::default().with_scheme(app::Scheme::Gtk);
+    let zoom = Zoom::apply(settings.borrow().zoom);
     app::set_visible_focus(false);
     let pal: Pal = Rc::new(Cell::new(Palette::load(settings.borrow().theme)));
     pal.get().apply_globals();
@@ -450,13 +482,13 @@ fn main() {
     let line_top = strip(1, HEADER_H, W - 2, 1);
 
     // Body: results, or the settings panel.
-    let open_slot: Slot<dyn Fn(&Hit)> = Rc::default();
+    let open_slot: Slot<OpenFn> = Rc::default();
     let mut list = ResultList::new(1, BODY_Y, W - 2, BODY_H, pal.get(), {
         let open_slot = open_slot.clone();
-        move |hit| {
+        move |hit, program| {
             let f = open_slot.borrow().clone();
             if let Some(f) = f {
-                f(hit);
+                f(hit, program);
             }
         }
     });
@@ -583,13 +615,20 @@ fn main() {
         }
     };
 
+    // Run a program hit, or (other hits, or Ctrl held) show it in the file manager.
     let open_hit = {
         let status = status.clone();
-        move |hit: &Hit| {
+        move |hit: &Hit, program: bool| {
             client::notify_opened(&hit.path);
-            match open::reveal(&paths::from_bytes(&hit.path), hit.is_dir) {
+            let path = paths::from_bytes(&hit.path);
+            let r = if program && !app::event_state().contains(Shortcut::Ctrl) {
+                open::run(&path).map_err(|e| format!("Cannot run {}: {e}", path.display()))
+            } else {
+                open::reveal(&path, hit.is_dir).map_err(|e| format!("Cannot open file manager: {e}"))
+            };
+            match r {
                 Ok(()) => app::quit(),
-                Err(e) => status.clone().set_label(&format!("Cannot open file manager: {e}")),
+                Err(e) => status.clone().set_label(&e),
             }
         }
     };
@@ -734,8 +773,8 @@ fn main() {
                 Key::PageDown => list.move_selection(page),
                 Key::PageUp => list.move_selection(-page),
                 Key::Enter | Key::KPEnter => {
-                    if let Some(hit) = list.selected_hit() {
-                        open_hit(&hit);
+                    if let Some((hit, program)) = list.selected_hit() {
+                        open_hit(&hit, program);
                     }
                 }
                 _ => return false,
@@ -799,10 +838,17 @@ fn main() {
         }
     }
 
-    // Closed while the settings panel was open (focus loss, Esc, another `finder`): keep edits
-    // to the text fields, which are otherwise saved when the panel closes.
+    // On exit (focus loss, Esc, another `finder`): keep the zoom, and edits to the text fields
+    // if the settings panel is open (otherwise saved when it closes).
     let p = panel.borrow();
-    if p.group.visible() && p.store(&mut settings.borrow_mut()) {
-        let _ = settings.borrow().save();
+    let mut s = settings.borrow_mut();
+    let mut changed = p.group.visible() && p.store(&mut s);
+    let z = zoom.percent(&win);
+    if z != s.zoom {
+        s.zoom = z;
+        changed = true;
+    }
+    if changed {
+        let _ = s.save();
     }
 }

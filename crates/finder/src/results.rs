@@ -1,14 +1,16 @@
 //! The result list: custom-drawn rows with a file-type icon, the name with the matched part
-//! highlighted, and the parent folder below it.
+//! highlighted, and the parent folder below it. Programs named like the keyword (see
+//! `finder_core::launch`) are marked; opening one runs it.
 
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
 use finder_core::fold::fold;
+use finder_core::launch;
 use finder_core::paths::SEP;
 use finder_core::proto::Hit;
-use fltk::enums::{Color, Event, Font};
+use fltk::enums::{Align, Color, Event, Font};
 use fltk::prelude::*;
 use fltk::{app, draw, widget::Widget};
 
@@ -27,6 +29,8 @@ struct Row {
     kind: Kind,
     name_hl: Option<Range<usize>>,
     parent_hl: Option<Range<usize>>,
+    /// A program named like the keyword: opening it runs it.
+    program: bool,
 }
 
 struct State {
@@ -53,7 +57,8 @@ pub struct MatchMode {
 }
 
 impl ResultList {
-    pub fn new(x: i32, y: i32, w: i32, h: i32, palette: Palette, on_open: impl Fn(&Hit) + 'static) -> ResultList {
+    /// `on_open(hit, program)` is called on double-click; `program` if the hit is a program to run.
+    pub fn new(x: i32, y: i32, w: i32, h: i32, palette: Palette, on_open: impl Fn(&Hit, bool) + 'static) -> ResultList {
         let mut widget = Widget::new(x, y, w, h, None);
         let st = Rc::new(RefCell::new(State {
             rows: Vec::new(),
@@ -98,9 +103,10 @@ impl ResultList {
         self.set_hits(Vec::new(), "", &MatchMode { case_sensitive: false, full_path: false });
     }
 
-    pub fn selected_hit(&self) -> Option<Hit> {
+    /// The selected hit, and whether it is a program to run.
+    pub fn selected_hit(&self) -> Option<(Hit, bool)> {
         let st = self.st.borrow();
-        st.selected.and_then(|i| st.rows.get(i)).map(|r| r.hit.clone())
+        st.selected.and_then(|i| st.rows.get(i)).map(|r| (r.hit.clone(), r.program))
     }
 
     /// Rows that fit in the visible area.
@@ -153,8 +159,15 @@ impl Row {
         } else {
             name_hl = find(&name, query, mode.case_sensitive);
         }
-        let kind = if hit.is_dir { Kind::Folder } else { Kind::of(&name) };
-        Row { hit, name, parent, kind, name_hl, parent_hl }
+        let program = launch::is_launch_hit(&hit.path, hit.is_dir, query, mode.case_sensitive);
+        let kind = if hit.is_dir {
+            Kind::Folder
+        } else if program {
+            Kind::Program
+        } else {
+            Kind::of(&name)
+        };
+        Row { hit, name, parent, kind, name_hl, parent_hl, program }
     }
 }
 
@@ -404,8 +417,16 @@ fn draw_list(w: &mut Widget, st: &State) {
             draw::draw_rounded_rectf(x + 6, ry + 2, ww - 12 - SCROLL_W / 2, ROW_H - 4, 7);
         }
         draw_icon(x + ICON_X, ry + (ROW_H - 24) / 2, row.kind, &row.name, p, on);
-        let text_w = ww - TEXT_X - 16 - SCROLL_W;
+        let mut text_w = ww - TEXT_X - 16 - SCROLL_W;
         let (fg, sub) = if on { (p.on_accent, mix(p.accent, p.on_accent, 0.8)) } else { (p.text, p.muted) };
+        if row.program {
+            let tag = if on { "Enter: run   Ctrl+Enter: show in folder" } else { "Program" };
+            draw::set_font(Font::Helvetica, 12);
+            let tw = draw::measure(tag, false).0;
+            draw::set_draw_color(sub);
+            draw::draw_text2(tag, x + ww - 16 - SCROLL_W - tw, ry, tw, ROW_H, Align::Right | Align::Inside);
+            text_w -= tw + 16;
+        }
         let (hl_bg, hl_fg) = if on { (mix(p.accent, p.on_accent, 0.25), p.on_accent) } else { (p.match_bg, p.text) };
         // Name.
         draw::set_font(Font::Helvetica, 14);
@@ -439,7 +460,7 @@ fn row_at(w: &Widget, st: &State, ey: i32) -> Option<usize> {
     (ey >= w.y() && i < st.rows.len()).then_some(i)
 }
 
-fn handle(w: &mut Widget, st: &Rc<RefCell<State>>, ev: Event, on_open: &dyn Fn(&Hit)) -> bool {
+fn handle(w: &mut Widget, st: &Rc<RefCell<State>>, ev: Event, on_open: &dyn Fn(&Hit, bool)) -> bool {
     let (ex, ey) = app::event_coords();
     let on_scrollbar = ex >= w.x() + w.w() - SCROLL_W;
     match ev {
@@ -486,9 +507,9 @@ fn handle(w: &mut Widget, st: &Rc<RefCell<State>>, ev: Event, on_open: &dyn Fn(&
             s.selected = Some(i);
             w.redraw();
             if app::event_clicks() {
-                let hit = s.rows[i].hit.clone();
+                let (hit, program) = (s.rows[i].hit.clone(), s.rows[i].program);
                 drop(s);
-                on_open(&hit);
+                on_open(&hit, program);
             }
             true
         }

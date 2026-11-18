@@ -7,6 +7,7 @@ Instant file locator for Linux and Windows: type a keyword, pick a match, the fi
 1. `finder` opens and asks for a keyword.
 2. It lists all files and folders on the system whose name contains the keyword.
 3. User picks one → app closes, file manager opens: folder → that folder; file → its parent folder with the file selected.
+4. Programs named like the keyword (`discord` → `Discord.exe`; Linux: an executable file `discord`) rank first; Enter runs them, Ctrl+Enter shows them in the file manager.
 
 File manager: Dolphin (Linux), Explorer (Windows).
 
@@ -75,7 +76,7 @@ Fedora deps: `rust cargo gcc-c++ libstdc++-static cmake libX11-devel libXext-dev
 
 ## Settings
 
-Plain text, `key = value`, `#` comments. Created with defaults if missing; re-read on every `finder` launch. Changed in the app with the toggles next to the search field (`Aa`, `Path`, `Hidden`; Alt+C/P/H) or the settings panel (sliders button or Ctrl+,), which rewrites the file.
+Plain text, `key = value`, no comments (older files are rewritten). Created with defaults if missing; re-read on every `finder` launch. Changed in the app with the toggles next to the search field (`Aa`, `Path`, `Hidden`; Alt+C/P/H), the settings panel (sliders button or Ctrl+,), or Ctrl +/- / Ctrl+0 for zoom; the app rewrites the file.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -84,6 +85,7 @@ Plain text, `key = value`, `#` comments. Created with defaults if missing; re-re
 | `show_hidden` | `false` | Show hidden entries (names starting with `.`; on Windows also the hidden attribute) and everything below hidden folders |
 | `exclude` | (empty) | Comma-separated folder names (`node_modules`, any depth, case-insensitive) or paths (`~/Downloads/old`) left out of results with everything below them |
 | `theme` | `auto` | `auto` follows the desktop (KDE color scheme and accent / GTK dark preference; Windows app mode and accent), or `light` / `dark` |
+| `zoom` | `100` | Window zoom in percent on top of the display scaling; saved when `finder` closes |
 | `hotkey` | (empty) | Windows: global shortcut that opens `finder`, e.g. `ctrl+alt+space`, `win+shift+f`, `f12`; also in the settings panel. Registered by `finderd` (picks up edits live), so it opens instantly; a `.lnk` shortcut key goes through Explorer, which can stall ~3 s per hung window. Linux: bind `finder` in the desktop's shortcut settings |
 
 Hidden files and exclusions are filtered at query time, so they stay in the index and changes apply immediately.

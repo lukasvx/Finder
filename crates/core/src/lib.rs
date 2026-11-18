@@ -2,6 +2,7 @@
 
 pub mod fold;
 pub mod hotkey;
+pub mod launch;
 pub mod paths;
 #[cfg(windows)]
 pub mod pipe;

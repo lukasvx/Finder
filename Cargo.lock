@@ -80,6 +80,7 @@ version = "0.4.1"
 dependencies = [
  "finder-core",
  "fltk",
+ "fltk-sys",
  "windows-sys",
 ]
 

@@ -1,4 +1,5 @@
-//! Show a path in the system file manager: folders are opened, files are selected in their folder.
+//! Show a path in the system file manager (folders are opened, files are selected in their
+//! folder), or run a program.
 
 use std::io;
 use std::path::Path;
@@ -65,6 +66,42 @@ pub fn reveal(path: &Path, is_dir: bool) -> io::Result<()> {
         cmd.raw_arg(format!("/select,\"{}\"", path.display()));
     }
     spawn(&mut cmd)
+}
+
+/// Run the program at `path`, detached, in its own folder.
+#[cfg(unix)]
+pub fn run(path: &Path) -> io::Result<()> {
+    let mut cmd = Command::new(path);
+    if let Some(dir) = path.parent() {
+        cmd.current_dir(dir);
+    }
+    spawn(&mut cmd)
+}
+
+/// Run the program at `path` in its own folder. `ShellExecuteW` rather than `CreateProcess`, so a
+/// program that requires admin rights gets the elevation prompt.
+#[cfg(windows)]
+pub fn run(path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide = |p: &Path| p.as_os_str().encode_wide().chain([0]).collect::<Vec<u16>>();
+    let file = wide(path);
+    let dir = path.parent().map(wide);
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    // SAFETY: all strings are NUL-terminated and outlive the call.
+    let r = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            dir.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()),
+            SW_SHOWNORMAL,
+        )
+    };
+    // Values up to 32 are errors.
+    if r as usize > 32 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
 #[cfg(all(test, unix))]

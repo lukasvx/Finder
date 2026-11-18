@@ -13,6 +13,7 @@ use memchr::memmem;
 use crate::db::{Bitset, Db, Node};
 use crate::index::{FLAG_HIDDEN, NONE, View};
 use finder_core::fold::fold;
+use finder_core::launch;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Options {
@@ -141,9 +142,13 @@ pub struct Searcher {
     blocked: Option<(u64, Bitset)>,
 }
 
-/// Rank key, smaller is better: match kind (exact name, prefix, substring, path only),
-/// depth, not recently opened, name length. Final ties are broken by path.
+/// Rank key, smaller is better: match kind (program for the keyword on Windows, exact name,
+/// prefix, substring, path only), depth, not recently opened, name length. Final ties are broken
+/// by path. Programs on Unix need a disk check; they are moved up after ranking (`search`).
 type Key = (u8, u8, bool, usize);
+
+/// Match kind of an exact name match; programs (`launch`) are among kinds up to this one.
+const EXACT: u8 = 1;
 
 struct Ranker<'a> {
     db: &'a Db,
@@ -175,22 +180,24 @@ impl Ranker<'_> {
         if self.opts.case_sensitive { self.v.name(i) } else { self.v.lower_name(i) }
     }
 
-    fn kind(&self, name: &[u8]) -> u8 {
-        if name == self.needle {
+    fn kind(&self, name: &[u8], is_dir: impl FnOnce() -> bool) -> u8 {
+        if cfg!(windows) && name.starts_with(self.needle) && launch::name_matches(name, self.needle) && !is_dir() {
             0
+        } else if name == self.needle {
+            EXACT
         } else if name.starts_with(self.needle) {
-            1
-        } else if !self.opts.full_path || memmem::find(name, self.needle).is_some() {
             2
-        } else {
+        } else if !self.opts.full_path || memmem::find(name, self.needle).is_some() {
             3
+        } else {
+            4
         }
     }
 
     fn base_key(&self, i: u32) -> Key {
         let name = self.base_name(i);
         let recent = !self.recent.is_empty() && self.recent.contains(&Node::Base(i));
-        (self.kind(name), self.v.entry(i).depth, !recent, name.len())
+        (self.kind(name, || self.v.is_dir(i)), self.v.entry(i).depth, !recent, name.len())
     }
 
     fn key(&self, n: Node) -> Key {
@@ -198,7 +205,7 @@ impl Ranker<'_> {
             Node::Base(i) => self.base_key(i),
             Node::Delta(_) => {
                 let name = name_of(self.db, n, self.opts);
-                (self.kind(name), self.db.depth(n), !self.recent.contains(&n), name.len())
+                (self.kind(name, || self.db.is_dir(n)), self.db.depth(n), !self.recent.contains(&n), name.len())
             }
         }
     }
@@ -290,13 +297,22 @@ impl Searcher {
             found.top.push(r.key(n), n);
         }
         let total = found.base.len() + found.delta.len();
-        let mut hits: Vec<(Key, Vec<u8>, Node)> = found.top.heap.into_iter().map(|(k, n)| (k, db.path(n), n)).collect();
+        let mut hits: Vec<(bool, Key, Vec<u8>, Node)> = found
+            .top
+            .heap
+            .into_iter()
+            .map(|(k, n)| {
+                let path = db.path(n);
+                let program = k.0 <= EXACT && launch::is_launch_hit(&path, db.is_dir(n), query, opts.case_sensitive);
+                (!program, k, path, n)
+            })
+            .collect();
         hits.sort_unstable();
         if !opts.full_path && found.base.len() <= CACHE_MAX {
             self.cache =
                 Some(Cache { generation: db.generation(), opts, needle, base: found.base, delta: found.delta });
         }
-        Outcome { total, hits: hits.into_iter().map(|(_, _, n)| n).collect() }
+        Outcome { total, hits: hits.into_iter().map(|(_, _, _, n)| n).collect() }
     }
 }
 
@@ -529,6 +545,31 @@ mod tests {
         assert_eq!((total, hits), (1, vec!["/home/u/Notes.txt".to_string()]));
         assert_eq!(run(&db, &mut s, "", false, false).0, 0);
         assert_eq!(run(&db, &mut s, "zzz", false, false).0, 0);
+    }
+
+    /// A program named like the keyword ranks above shallower exact matches.
+    #[cfg(unix)]
+    #[test]
+    fn program_first() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::index::tests::temp_dir("search-program");
+        let d = dir.to_str().unwrap();
+        std::fs::create_dir_all(dir.join("discord")).unwrap();
+        std::fs::create_dir_all(dir.join("opt/app")).unwrap();
+        for (f, mode) in [("opt/app/Discord", 0o755), ("discord.txt", 0o644), ("opt/discord", 0o644)] {
+            std::fs::write(dir.join(f), "").unwrap();
+            std::fs::set_permissions(dir.join(f), std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let paths: Vec<String> =
+            ["discord/", "opt/app/Discord", "discord.txt", "opt/discord"].iter().map(|p| format!("{d}/{p}")).collect();
+        let db = db_from(&paths.iter().map(String::as_str).collect::<Vec<_>>(), "search-program-db");
+        let rel = |q: &str, cs: bool| -> Vec<String> {
+            run(&db, &mut Searcher::default(), q, cs, false).1.iter().map(|p| p[d.len() + 1..].to_string()).collect()
+        };
+        assert_eq!(rel("discord", false), ["opt/app/Discord", "discord", "opt/discord", "discord.txt"]);
+        // Case-sensitive: `Discord` is the only exact match, `discord` (the folder) is not a program.
+        assert_eq!(rel("discord", true), ["discord", "opt/discord", "discord.txt"]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

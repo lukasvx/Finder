@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use finder_core::fold::fold;
 use crate::index::{FLAG_DIR, Index, IndexBuilder, NONE, View, join_path, split_path};
+use finder_core::fold::fold;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Node {

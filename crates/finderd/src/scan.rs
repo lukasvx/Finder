@@ -12,8 +12,6 @@ use std::time::UNIX_EPOCH;
 use finder_core::paths::{SEP, from_bytes};
 
 use crate::db::{Db, Node};
-#[cfg(windows)]
-use crate::index::FLAG_HIDDEN;
 use crate::index::{FLAG_DIR, FLAG_SYMLINK, IndexBuilder};
 
 /// Directories that are listed but never descended into.
@@ -98,25 +96,12 @@ fn os_bytes(s: OsString) -> Vec<u8> {
     return s.to_string_lossy().into_owned().into_bytes();
 }
 
-/// Windows "hidden" attribute; free here, as directory listings carry the attributes.
-#[cfg(windows)]
-fn hidden_flag(e: &fs::DirEntry) -> u8 {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_HIDDEN: u32 = 2;
-    e.metadata().map_or(0, |m| if m.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0 { FLAG_HIDDEN } else { 0 })
-}
-
-#[cfg(not(windows))]
-fn hidden_flag(_: &fs::DirEntry) -> u8 {
-    0
-}
-
 /// Directory entries as (name, flags), sorted by name. Symlinks are not followed.
 pub fn read_dir_sorted(path: &Path) -> io::Result<Vec<(Vec<u8>, u8)>> {
     let mut out: Vec<(Vec<u8>, u8)> = fs::read_dir(path)?
         .filter_map(Result::ok)
         .map(|e| {
-            let flags = e.file_type().map_or(0, flags_of) | hidden_flag(&e);
+            let flags = e.file_type().map_or(0, flags_of);
             (os_bytes(e.file_name()), flags)
         })
         .collect();

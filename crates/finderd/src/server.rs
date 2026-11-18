@@ -10,7 +10,7 @@ use finder_core::proto::{Hit, Query, Request, Response};
 
 use crate::Shared;
 use crate::db::Node;
-use crate::search::{Filter, Options, Searcher};
+use crate::search::{Options, Searcher};
 
 #[cfg(unix)]
 pub type Listener = std::os::unix::net::UnixListener;
@@ -79,6 +79,10 @@ fn handle<S: io::Read + io::Write>(stream: &mut S, shared: &Shared) -> io::Resul
                 shared.recent.lock().unwrap().push(path);
                 Response::Ok
             }
+            Request::Quit => {
+                Response::Ok.send(stream)?;
+                std::process::exit(0);
+            }
         };
         let big = matches!(&resp, Response::Results { hits, .. } if hits.len() > TRIM_AFTER);
         resp.send(stream)?;
@@ -89,7 +93,7 @@ fn handle<S: io::Read + io::Write>(stream: &mut S, shared: &Shared) -> io::Resul
     }
 }
 
-/// Responses with more hits than this ("Show All") are followed by returning freed memory to the OS.
+/// Responses with more hits than this are followed by returning freed memory to the OS.
 const TRIM_AFTER: usize = 10_000;
 
 fn trim_heap() {
@@ -106,8 +110,7 @@ fn search(shared: &Shared, searcher: &mut Searcher, q: &Query) -> Response {
         return Response::Results { total: 0, indexing: true, hits: Vec::new() };
     };
     let recent: HashSet<Node> = shared.recent.lock().unwrap().nodes(db);
-    let opts = Options { case_sensitive: q.case_sensitive, full_path: q.full_path };
-    searcher.set_filter(Filter { hide_hidden: !q.show_hidden, exclude: q.exclude.clone() });
+    let opts = Options { case_sensitive: q.case_sensitive };
     let out = searcher.search(db, &q.text, opts, q.limit as usize, &recent);
     let hits = out.hits.iter().map(|&n| Hit { is_dir: db.is_dir(n), path: db.path(n) }).collect();
     Response::Results { total: out.total as u64, indexing, hits }

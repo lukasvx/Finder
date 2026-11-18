@@ -182,8 +182,8 @@ fn full_scan(shared: &Shared, ex: &Exclusions) -> u64 {
 }
 
 /// Delete `index.*.tmp` files left by an earlier run that crashed or could not rename them.
-fn remove_stale_tmp_files() {
-    let Ok(dir) = std::fs::read_dir(paths::cache_dir()) else { return };
+pub fn remove_stale_tmp_files() {
+    let Ok(dir) = std::fs::read_dir(paths::data_dir()) else { return };
     for e in dir.filter_map(Result::ok) {
         let name = e.file_name();
         let name = name.to_string_lossy();

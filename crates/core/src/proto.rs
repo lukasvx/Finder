@@ -2,10 +2,32 @@
 
 use std::io::{self, Read, Write};
 
+/// A connection to the daemon.
+#[cfg(unix)]
+pub type Stream = std::os::unix::net::UnixStream;
+#[cfg(windows)]
+pub type Stream = std::fs::File;
+
+/// Connect to the running daemon.
+pub fn connect() -> io::Result<Stream> {
+    #[cfg(unix)]
+    return Stream::connect(crate::paths::socket_path());
+    #[cfg(windows)]
+    return crate::pipe::connect();
+}
+
+/// Send `req` and wait for the reply.
+pub fn exchange(c: &mut Stream, req: &Request) -> io::Result<Response> {
+    req.send(c)?;
+    Response::recv(c)
+}
+
 const MAX_FRAME: u32 = 256 << 20;
 
-const REQ_SEARCH: u8 = 1;
+/// 1 was the search with full-path, hidden and exclude options (up to v0.4).
+const REQ_SEARCH: u8 = 3;
 const REQ_OPENED: u8 = 2;
+const REQ_QUIT: u8 = 4;
 const RESP_RESULTS: u8 = 1;
 const RESP_OK: u8 = 2;
 const RESP_ERROR: u8 = 3;
@@ -14,13 +36,8 @@ const RESP_ERROR: u8 = 3;
 pub struct Query {
     pub text: String,
     pub case_sensitive: bool,
-    pub full_path: bool,
     /// Maximum number of hits to return (the total count is always reported).
     pub limit: u32,
-    /// Include hidden entries and everything below hidden folders.
-    pub show_hidden: bool,
-    /// Folder names or absolute paths whose subtrees are left out.
-    pub exclude: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +45,8 @@ pub enum Request {
     Search(Query),
     /// The user opened this path; used for ranking.
     Opened(Vec<u8>),
+    /// Exit the daemon (`finderd --uninstall`).
+    Quit,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,14 +152,13 @@ impl Request {
         let mut e = Enc::default();
         match self {
             Request::Search(q) => {
-                e.u8(REQ_SEARCH).bytes(q.text.as_bytes()).u8(q.case_sensitive as u8).u8(q.full_path as u8).u32(q.limit);
-                e.u8(q.show_hidden as u8).u32(q.exclude.len() as u32);
-                for x in &q.exclude {
-                    e.bytes(x);
-                }
+                e.u8(REQ_SEARCH).bytes(q.text.as_bytes()).u8(q.case_sensitive as u8).u32(q.limit);
             }
             Request::Opened(path) => {
                 e.u8(REQ_OPENED).bytes(path);
+            }
+            Request::Quit => {
+                e.u8(REQ_QUIT);
             }
         }
         e.0
@@ -150,14 +168,12 @@ impl Request {
         let mut d = Dec(buf);
         let req = match d.u8()? {
             REQ_SEARCH => {
-                let (text, case_sensitive, full_path, limit) = (d.string()?, d.bool()?, d.bool()?, d.u32()?);
-                let show_hidden = d.bool()?;
-                let n = d.u32()?;
-                let exclude = (0..n).map(|_| d.bytes().map(<[u8]>::to_vec)).collect::<io::Result<_>>()?;
-                Request::Search(Query { text, case_sensitive, full_path, limit, show_hidden, exclude })
+                let (text, case_sensitive, limit) = (d.string()?, d.bool()?, d.u32()?);
+                Request::Search(Query { text, case_sensitive, limit })
             }
             REQ_OPENED => Request::Opened(d.bytes()?.to_vec()),
-            _ => return Err(invalid("unknown request")),
+            REQ_QUIT => Request::Quit,
+            _ => return Err(invalid("unknown request (finder and finderd from different versions?)")),
         };
         d.end()?;
         Ok(req)
@@ -229,15 +245,9 @@ mod tests {
     #[test]
     fn roundtrip() {
         let reqs = [
-            Request::Search(Query {
-                text: "héllo".into(),
-                case_sensitive: true,
-                full_path: false,
-                limit: 500,
-                show_hidden: true,
-                exclude: vec![b"node_modules".to_vec(), b"/home/x/old".to_vec()],
-            }),
+            Request::Search(Query { text: "héllo".into(), case_sensitive: true, limit: 500 }),
             Request::Opened(b"/home/x".to_vec()),
+            Request::Quit,
         ];
         for r in reqs {
             let mut buf = Vec::new();

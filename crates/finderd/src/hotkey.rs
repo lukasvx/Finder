@@ -2,12 +2,12 @@
 //!
 //! A shortcut key on a `.lnk` file is handled by Explorer, which first asks every top-level window
 //! whether it owns that key and waits ~3 s for each one that is hung. `RegisterHotKey` has no
-//! such delay. The key is re-registered whenever the settings file changes.
+//! such delay. The key is re-registered whenever `settings.json` changes.
 
 use std::os::windows::ffi::OsStrExt;
 use std::process::{Command, Stdio};
 use std::ptr::null_mut;
-use std::{env, thread};
+use std::thread;
 
 use finder_core::hotkey::{self, Hotkey};
 use finder_core::paths;
@@ -32,13 +32,13 @@ pub fn spawn() {
 }
 
 fn wanted() -> Option<Hotkey> {
-    hotkey::parse(&Settings::load().0.hotkey)
+    hotkey::parse(&Settings::load()?.0.hotkey)
 }
 
 fn run() {
-    // Settings::load creates the config dir and file if missing, so the dir can be watched.
+    // `main` creates the data dir, so it can be watched before `settings.json` exists.
     let mut want = wanted();
-    let dir: Vec<u16> = paths::config_dir().as_os_str().encode_wide().chain([0]).collect();
+    let dir: Vec<u16> = paths::data_dir().as_os_str().encode_wide().chain([0]).collect();
     let change = unsafe {
         FindFirstChangeNotificationW(dir.as_ptr(), 0, FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME)
     };
@@ -85,9 +85,8 @@ fn run() {
 /// Start `finder.exe` from next to this executable. The hotkey made us the process that received
 /// the last input, so we may pass the right to take the foreground on to it.
 fn launch() {
-    let ui = match env::current_exe() {
-        Ok(p) => p.with_file_name("finder.exe"),
-        Err(e) => return eprintln!("finderd: cannot locate finder.exe: {e}"),
+    let Some(ui) = paths::sibling_exe("finder") else {
+        return eprintln!("finderd: finder.exe not found next to finderd.exe");
     };
     unsafe { AllowSetForegroundWindow(ASFW_ANY) };
     if let Err(e) = Command::new(&ui).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {

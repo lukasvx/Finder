@@ -1,9 +1,8 @@
-//! Colors: light/dark palettes, following the desktop when `theme = auto`.
+//! Colors: a light or dark palette, whichever the desktop uses, with its accent color.
 //!
 //! Linux: KDE's `kdeglobals` color scheme (exact colors and accent), else the GTK dark preference.
 //! Windows: the "app mode" and accent color from the registry.
 
-use finder_core::settings::Theme;
 use fltk::enums::Color;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,16 +63,9 @@ impl Palette {
         }
     }
 
-    pub fn load(theme: Theme) -> Palette {
+    pub fn load() -> Palette {
         let d = Desktop::read();
-        let accent = d.accent.unwrap_or(DEFAULT_ACCENT);
-        // Auto is exactly the light or dark palette, whichever the desktop uses.
-        let dark = match theme {
-            Theme::Light => false,
-            Theme::Dark => true,
-            Theme::Auto => d.dark.unwrap_or(false),
-        };
-        let mut p = Palette::base(dark, accent);
+        let mut p = Palette::base(d.dark.unwrap_or(false), d.accent.unwrap_or(DEFAULT_ACCENT));
         if let Some(c) = d.accent_fg {
             p.on_accent = c;
         }

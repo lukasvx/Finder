@@ -1,4 +1,6 @@
 //! Platform-specific file locations.
+//!
+//! Finder keeps exactly two files, side by side in `data_dir()`: `settings.json` and `index.bin`.
 
 use std::env;
 use std::path::PathBuf;
@@ -21,65 +23,51 @@ pub fn home() -> PathBuf {
     return env_dir("USERPROFILE").unwrap_or_else(|| PathBuf::from(r"C:\"));
 }
 
-/// Expand a leading `~` (alone or followed by a separator) to the home folder.
-pub fn expand_home(s: &str) -> PathBuf {
-    match s.strip_prefix('~') {
-        Some("") => home(),
-        Some(rest) if rest.starts_with(['/', '\\']) => home().join(&rest[1..]),
-        _ => PathBuf::from(s),
-    }
-}
-
 /// `$XDG_CONFIG_HOME` (default `~/.config`).
 #[cfg(unix)]
 pub fn xdg_config_home() -> PathBuf {
     env_dir("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config"))
 }
 
-/// `$XDG_DATA_HOME` (default `~/.local/share`).
-#[cfg(unix)]
-pub fn xdg_data_home() -> PathBuf {
-    env_dir("XDG_DATA_HOME").unwrap_or_else(|| home().join(".local/share"))
-}
-
-/// Directory holding the index cache.
-pub fn cache_dir() -> PathBuf {
+/// Directory holding `settings.json` and `index.bin`: `$XDG_DATA_HOME/finder`
+/// (`~/.local/share/finder`) or `%LOCALAPPDATA%\Finder`.
+pub fn data_dir() -> PathBuf {
     #[cfg(unix)]
-    return env_dir("XDG_CACHE_HOME").unwrap_or_else(|| home().join(".cache")).join("finder");
+    return env_dir("XDG_DATA_HOME").unwrap_or_else(|| home().join(".local/share")).join("finder");
     #[cfg(windows)]
     return env_dir("LOCALAPPDATA").unwrap_or_else(env::temp_dir).join("Finder");
 }
 
-/// Directory holding `settings.conf`.
-pub fn config_dir() -> PathBuf {
-    #[cfg(unix)]
-    return xdg_config_home().join("finder");
-    #[cfg(windows)]
-    return env_dir("APPDATA").unwrap_or_else(env::temp_dir).join("Finder");
-}
-
 pub fn settings_file() -> PathBuf {
-    config_dir().join("settings.conf")
+    data_dir().join("settings.json")
 }
 
 pub fn index_file() -> PathBuf {
-    cache_dir().join("index.bin")
+    data_dir().join("index.bin")
 }
 
-pub fn recent_file() -> PathBuf {
-    cache_dir().join("recent.txt")
+/// Private directory for sockets: `$XDG_RUNTIME_DIR` (a tmpfs, cleared at logout).
+#[cfg(unix)]
+fn runtime_dir() -> PathBuf {
+    env_dir("XDG_RUNTIME_DIR").unwrap_or_else(data_dir)
 }
 
 /// Unix socket the daemon listens on.
 #[cfg(unix)]
 pub fn socket_path() -> PathBuf {
-    env_dir("XDG_RUNTIME_DIR").unwrap_or_else(cache_dir).join("finder.sock")
+    runtime_dir().join("finder.sock")
 }
 
 /// Unix socket of the open `finder` window, so a new one can close it.
 #[cfg(unix)]
 pub fn ui_socket_path() -> PathBuf {
-    env_dir("XDG_RUNTIME_DIR").unwrap_or_else(cache_dir).join("finder-ui.sock")
+    runtime_dir().join("finder-ui.sock")
+}
+
+/// The other executable (`finder` or `finderd`) from next to the running one.
+pub fn sibling_exe(name: &str) -> Option<PathBuf> {
+    let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+    Some(env::current_exe().ok()?.with_file_name(file)).filter(|p| p.is_file())
 }
 
 /// Convert raw index path bytes to a `PathBuf`.

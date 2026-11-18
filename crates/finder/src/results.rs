@@ -28,7 +28,6 @@ struct Row {
     parent: String,
     kind: Kind,
     name_hl: Option<Range<usize>>,
-    parent_hl: Option<Range<usize>>,
     /// A program named like the keyword: opening it runs it.
     program: bool,
 }
@@ -48,12 +47,6 @@ struct State {
 pub struct ResultList {
     w: Widget,
     st: Rc<RefCell<State>>,
-}
-
-/// How the keyword is matched, for highlighting.
-pub struct MatchMode {
-    pub case_sensitive: bool,
-    pub full_path: bool,
 }
 
 impl ResultList {
@@ -79,19 +72,18 @@ impl ResultList {
         ResultList { w: widget, st }
     }
 
-    pub fn widget(&self) -> &Widget {
-        &self.w
+    pub fn widget(&mut self) -> &mut Widget {
+        &mut self.w
     }
 
-    pub fn set_palette(&mut self, p: Palette) {
-        self.st.borrow_mut().palette = p;
-        self.w.redraw();
+    pub fn len(&self) -> usize {
+        self.st.borrow().rows.len()
     }
 
     /// Replace the rows; the first one is selected.
-    pub fn set_hits(&mut self, hits: Vec<Hit>, query: &str, mode: &MatchMode) {
+    pub fn set_hits(&mut self, hits: Vec<Hit>, query: &str, case_sensitive: bool) {
         let mut st = self.st.borrow_mut();
-        st.rows = hits.into_iter().map(|h| Row::new(h, query, mode)).collect();
+        st.rows = hits.into_iter().map(|h| Row::new(h, query, case_sensitive)).collect();
         st.selected = (!st.rows.is_empty()).then_some(0);
         st.hover = None;
         st.scroll = 0;
@@ -100,18 +92,13 @@ impl ResultList {
     }
 
     pub fn clear(&mut self) {
-        self.set_hits(Vec::new(), "", &MatchMode { case_sensitive: false, full_path: false });
+        self.set_hits(Vec::new(), "", false);
     }
 
     /// The selected hit, and whether it is a program to run.
     pub fn selected_hit(&self) -> Option<(Hit, bool)> {
         let st = self.st.borrow();
         st.selected.and_then(|i| st.rows.get(i)).map(|r| (r.hit.clone(), r.program))
-    }
-
-    /// Rows that fit in the visible area.
-    pub fn page(&self) -> i32 {
-        (self.w.h() / ROW_H).max(1)
     }
 
     /// Move the selection by `delta` rows and scroll it into view.
@@ -136,30 +123,15 @@ impl ResultList {
 }
 
 impl Row {
-    fn new(hit: Hit, query: &str, mode: &MatchMode) -> Row {
+    fn new(hit: Hit, query: &str, case_sensitive: bool) -> Row {
         let path = String::from_utf8_lossy(&hit.path).into_owned();
         let cut = path.trim_end_matches(SEP as char).rfind(SEP as char);
         let (parent, name) = match cut {
             Some(i) if i + 1 < path.len() => (path[..i.max(root_len(&path))].to_string(), path[i + 1..].to_string()),
             _ => (String::new(), path.clone()),
         };
-        let (mut name_hl, mut parent_hl) = (None, None);
-        if mode.full_path {
-            // Highlight within the full path, then split the range between the two lines.
-            let needle: String = query.chars().map(|c| if c == '/' { SEP as char } else { c }).collect();
-            if let Some(r) = find(&path, &needle, mode.case_sensitive) {
-                let name_start = path.len() - name.len();
-                if r.end > name_start {
-                    name_hl = Some(r.start.max(name_start) - name_start..r.end - name_start);
-                }
-                if r.start < parent.len() {
-                    parent_hl = Some(r.start..r.end.min(parent.len()));
-                }
-            }
-        } else {
-            name_hl = find(&name, query, mode.case_sensitive);
-        }
-        let program = launch::is_launch_hit(&hit.path, hit.is_dir, query, mode.case_sensitive);
+        let name_hl = find(&name, query, case_sensitive);
+        let program = launch::is_launch_hit(&hit.path, hit.is_dir, query, case_sensitive);
         let kind = if hit.is_dir {
             Kind::Folder
         } else if program {
@@ -167,7 +139,7 @@ impl Row {
         } else {
             Kind::of(&name)
         };
-        Row { hit, name, parent, kind, name_hl, parent_hl, program }
+        Row { hit, name, parent, kind, name_hl, program }
     }
 }
 
@@ -227,9 +199,9 @@ impl Kind {
             | "cab" | "jar" => Kind::Archive,
             "rs" | "c" | "h" | "cpp" | "hpp" | "cc" | "py" | "js" | "ts" | "tsx" | "jsx" | "java" | "kt" | "go"
             | "rb" | "php" | "cs" | "swift" | "lua" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd"
-            | "html" | "htm" | "css" | "scss" | "json" | "toml" | "yaml" | "yml" | "xml" | "sql" | "vue"
-            | "svelte" | "zig" | "hs" | "ml" | "ex" | "exs" | "dart" | "r" | "m" | "cmake" | "mk" | "ini"
-            | "conf" | "cfg" | "lock" => Kind::Code,
+            | "html" | "htm" | "css" | "scss" | "json" | "toml" | "yaml" | "yml" | "xml" | "sql" | "vue" | "svelte"
+            | "zig" | "hs" | "ml" | "ex" | "exs" | "dart" | "r" | "m" | "cmake" | "mk" | "ini" | "conf" | "cfg"
+            | "lock" => Kind::Code,
             "txt" | "md" | "rst" | "doc" | "docx" | "odt" | "rtf" | "tex" | "log" | "csv" | "epub" => Kind::Text,
             "pdf" => Kind::Pdf,
             "xls" | "xlsx" | "ods" => Kind::Sheet,
@@ -321,9 +293,9 @@ fn draw_icon(x: i32, y: i32, kind: Kind, name: &str, p: &Palette, on: bool) {
 }
 
 /// `text` shortened from the left to fit `max` pixels with the current font (`…/c/d`).
-fn elide_left(text: &str, max: i32) -> (String, bool) {
+fn elide_left(text: &str, max: i32) -> String {
     if draw::width(text) as i32 <= max {
-        return (text.to_string(), false);
+        return text.to_string();
     }
     let mut start = 0;
     for (i, _) in text.char_indices() {
@@ -332,7 +304,7 @@ fn elide_left(text: &str, max: i32) -> (String, bool) {
             break;
         }
     }
-    (format!("…{}", &text[start..]), true)
+    format!("…{}", &text[start..])
 }
 
 /// `text` shortened at the end to fit `max` pixels; returns the kept byte length.
@@ -433,11 +405,10 @@ fn draw_list(w: &mut Widget, st: &State) {
         let (name, kept) = elide_right(&row.name, text_w);
         let name_hl = row.name_hl.clone().filter(|r| r.end <= kept);
         draw_highlighted(&name, name_hl, x + TEXT_X, ry + 20, 14, &Ink { fg, hl_bg, hl_fg });
-        // Parent folder; highlighted only when shown in full.
+        // Parent folder.
         draw::set_font(Font::Helvetica, 12);
-        let (parent, elided) = elide_left(&row.parent, text_w);
-        let parent_hl = row.parent_hl.clone().filter(|_| !elided);
-        draw_highlighted(&parent, parent_hl, x + TEXT_X, ry + 37, 12, &Ink { fg: sub, hl_bg, hl_fg });
+        draw::set_draw_color(sub);
+        draw::draw_text(&elide_left(&row.parent, text_w), x + TEXT_X, ry + 37);
     }
     if let Some((pos, len)) = thumb(st, h) {
         draw::set_draw_color(mix(p.surface, p.text, if st.drag.is_some() { 0.45 } else { 0.25 }));
@@ -544,21 +515,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn splits_and_highlights() {
-        let name_mode = MatchMode { case_sensitive: false, full_path: false };
-        let r = Row::new(hit("/home/u/Notes.TXT", false), "notes", &name_mode);
+        let r = Row::new(hit("/home/u/Notes.TXT", false), "notes", false);
         assert_eq!((r.name.as_str(), r.name_hl.clone()), ("Notes.TXT", Some(0..5)));
         assert_eq!(r.kind, Kind::Text);
-        let r = Row::new(hit("/etc", true), "etc", &name_mode);
+        let r = Row::new(hit("/etc", true), "etc", false);
         assert_eq!((r.parent.as_str(), r.kind), ("/", Kind::Folder));
         // Case-sensitive: no match, no highlight.
-        let cs = MatchMode { case_sensitive: true, full_path: false };
-        assert_eq!(Row::new(hit("/a/Notes", false), "notes", &cs).name_hl, None);
-        // Full path: the range is split between parent and name.
-        let full = MatchMode { case_sensitive: false, full_path: true };
-        let r = Row::new(hit("/home/user/src/main.rs", false), "user/src/ma", &full);
-        assert_eq!((r.parent_hl.clone(), r.name_hl.clone()), (Some(6..14), Some(0..2)));
+        assert_eq!(Row::new(hit("/a/Notes", false), "notes", true).name_hl, None);
         // Non-ASCII: ranges stay on character boundaries.
-        let r = Row::new(hit("/x/ÄÖÜ-Straße.md", false), "straße", &name_mode);
+        let r = Row::new(hit("/x/ÄÖÜ-Straße.md", false), "straße", false);
         assert_eq!(&r.name[r.name_hl.clone().unwrap()], "Straße");
     }
 

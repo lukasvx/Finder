@@ -1,5 +1,6 @@
 //! Code shared by `finder` (UI) and `finderd` (daemon).
 
+pub mod autostart;
 pub mod fold;
 pub mod hotkey;
 pub mod launch;

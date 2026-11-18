@@ -1,8 +1,5 @@
-//! One `finder` window at a time: a new `finder` closes the one that is already open.
-//!
-//! `finder` normally closes when its window loses keyboard focus. A window that never got the
-//! focus (Windows' foreground lock, or focus-stealing prevention) never loses it either, so it
-//! would stay open behind other windows; each launch could leave another one behind.
+//! One `finder` window at a time. Starting `finder` while a window is open closes that window;
+//! without a keyword the new `finder` then exits too, so the hotkey toggles Finder like KRunner.
 //!
 //! The open window listens on a Unix socket / named pipe (current user only). A new `finder`
 //! connects and sends `q`; the old one quits.
@@ -17,9 +14,17 @@ use crate::client::Msg;
 
 const QUIT: &[u8] = b"q";
 
-/// Close any open `finder`, then listen for the next one in the background; when it asks,
-/// `Msg::Quit` is sent to `tx`.
-pub fn take_over(tx: app::Sender<Msg>) {
+/// Ask an open `finder` window to close; true if there was one.
+pub fn close_open() -> bool {
+    #[cfg(unix)]
+    let conn = std::os::unix::net::UnixStream::connect(finder_core::paths::ui_socket_path());
+    #[cfg(windows)]
+    let conn = finder_core::pipe::connect_ui();
+    conn.and_then(|mut c| c.write_all(QUIT)).is_ok()
+}
+
+/// Listen in the background for the next `finder`; when it asks, `Msg::Quit` is sent to `tx`.
+pub fn listen(tx: app::Sender<Msg>) {
     thread::spawn(move || {
         let Some(mut listener) = bind() else { return };
         loop {
@@ -42,16 +47,9 @@ type Listener = std::os::unix::net::UnixListener;
 
 #[cfg(unix)]
 fn bind() -> Option<Listener> {
-    use std::os::unix::net::UnixStream;
     let path = finder_core::paths::ui_socket_path();
-    if let Ok(mut c) = UnixStream::connect(&path) {
-        let _ = c.write_all(QUIT);
-    }
-    // The old window keeps its (now unlinked) socket until it exits; it never removes the path.
+    // A closing window keeps its (now unlinked) socket until it exits; it never removes the path.
     let _ = std::fs::remove_file(&path);
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     Listener::bind(&path).ok()
 }
 
@@ -65,15 +63,12 @@ type Listener = finder_core::pipe::Listener;
 
 #[cfg(windows)]
 fn bind() -> Option<Listener> {
-    use finder_core::pipe;
-    // The pipe name is free only once the old window has exited: ask it to quit, then retry.
+    // The pipe name is free only once a closing window has exited: keep asking, then retry.
     for _ in 0..60 {
         match Listener::bind_ui() {
             Ok(l) => return Some(l),
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                if let Ok(mut c) = pipe::connect_ui() {
-                    let _ = c.write_all(QUIT);
-                }
+                close_open();
                 thread::sleep(Duration::from_millis(50));
             }
             Err(_) => return None,

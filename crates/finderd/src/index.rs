@@ -21,11 +21,10 @@ use finder_core::fold::fold_into;
 pub const NONE: u32 = u32::MAX;
 pub const FLAG_DIR: u8 = 1;
 pub const FLAG_SYMLINK: u8 = 2;
-/// Marked hidden by the filesystem (Windows attribute). Dotfiles are recognized by name instead.
-pub const FLAG_HIDDEN: u8 = 4;
 
 const MAGIC: [u8; 8] = *b"FINDRIDX";
-/// 2: `FLAG_HIDDEN`. A cache with another version is rebuilt by a full scan.
+/// A cache with another version is rebuilt by a full scan. (Flag bit 4, set by version 2 on
+/// Windows for hidden files, is no longer used.)
 const VERSION: u32 = 2;
 const HEADER_LEN: usize = size_of::<Header>();
 

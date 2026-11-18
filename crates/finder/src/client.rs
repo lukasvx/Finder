@@ -6,11 +6,16 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use finder_core::proto::{Hit, Query, Request, Response};
+use finder_core::proto::{Hit, Query, Request, Response, Stream, connect, exchange};
 use fltk::app;
 
 pub enum Msg {
-    Results { seq: u64, total: u64, indexing: bool, hits: Vec<Hit> },
+    Results {
+        seq: u64,
+        total: u64,
+        indexing: bool,
+        hits: Vec<Hit>,
+    },
     Status(String),
     /// A newer `finder` was started: close this one.
     Quit,
@@ -19,6 +24,8 @@ pub enum Msg {
 #[derive(Default)]
 struct Slot {
     pending: Option<(u64, Query)>,
+    /// Connect (starting `finderd` if needed) without a query.
+    connect: bool,
 }
 
 pub struct Client {
@@ -29,32 +36,12 @@ pub struct Client {
 const REPOLL: Duration = Duration::from_millis(500);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[cfg(unix)]
-type Stream = std::os::unix::net::UnixStream;
-
-#[cfg(unix)]
-fn connect() -> io::Result<Stream> {
-    Stream::connect(finder_core::paths::socket_path())
-}
-
-#[cfg(windows)]
-type Stream = std::fs::File;
-
-#[cfg(windows)]
-fn connect() -> io::Result<Stream> {
-    finder_core::pipe::connect()
-}
-
-/// Start `finderd` from next to this executable (or from `PATH`), detached, logging to the cache dir.
+/// Start `finderd` from next to this executable (or from `PATH`), detached.
 fn spawn_daemon() -> io::Result<()> {
     use std::process::{Command, Stdio};
-    let exe = if cfg!(windows) { "finderd.exe" } else { "finderd" };
-    let sibling = std::env::current_exe().ok().and_then(|p| Some(p.parent()?.join(exe))).filter(|p| p.is_file());
-    let mut cmd = Command::new(sibling.as_deref().unwrap_or(exe.as_ref()));
-    let cache = finder_core::paths::cache_dir();
-    let _ = std::fs::create_dir_all(&cache);
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(cache.join("finderd.log"));
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log.map_or_else(|_| Stdio::null(), Stdio::from));
+    let exe = finder_core::paths::sibling_exe("finderd");
+    let mut cmd = Command::new(exe.as_deref().unwrap_or("finderd".as_ref()));
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     cmd.spawn().map(drop)
@@ -66,6 +53,13 @@ impl Client {
         let s = slot.clone();
         thread::spawn(move || worker(&s, &tx));
         Client { slot }
+    }
+
+    /// Make sure `finderd` runs, so indexing starts and the hotkey is registered.
+    pub fn connect(&self) {
+        let (lock, cv) = &*self.slot;
+        lock.lock().unwrap().connect = true;
+        cv.notify_one();
     }
 
     pub fn search(&self, seq: u64, q: Query) {
@@ -80,18 +74,21 @@ fn worker(slot: &(Mutex<Slot>, Condvar), tx: &app::Sender<Msg>) {
     let mut conn: Option<Stream> = None;
     let mut repoll: Option<(u64, Query)> = None;
     loop {
-        let (seq, q) = {
+        let job = {
             let mut g = lock.lock().unwrap();
             loop {
                 if let Some(p) = g.pending.take() {
-                    break p;
+                    break Some(p);
+                }
+                if std::mem::take(&mut g.connect) {
+                    break None;
                 }
                 match &repoll {
                     Some(_) => {
                         let (g2, timeout) = cv.wait_timeout(g, REPOLL).unwrap();
                         g = g2;
                         if timeout.timed_out() && g.pending.is_none() {
-                            break repoll.take().unwrap();
+                            break repoll.take();
                         }
                     }
                     None => g = cv.wait(g).unwrap(),
@@ -101,13 +98,18 @@ fn worker(slot: &(Mutex<Slot>, Condvar), tx: &app::Sender<Msg>) {
         repoll = None;
         if conn.is_none() {
             match connect_or_spawn(tx) {
-                Ok(c) => conn = Some(c),
+                Ok(c) => {
+                    conn = Some(c);
+                    // Clears "Starting finderd…" or an earlier error.
+                    tx.send(Msg::Status(String::new()));
+                }
                 Err(e) => {
                     tx.send(Msg::Status(format!("Cannot reach finderd: {e}")));
                     continue;
                 }
             }
         }
+        let Some((seq, q)) = job else { continue };
         let req = Request::Search(q.clone());
         let mut result = exchange(conn.as_mut().unwrap(), &req);
         if result.is_err() {
@@ -133,11 +135,6 @@ fn worker(slot: &(Mutex<Slot>, Condvar), tx: &app::Sender<Msg>) {
             }
         }
     }
-}
-
-fn exchange(c: &mut Stream, req: &Request) -> io::Result<Response> {
-    req.send(c)?;
-    Response::recv(c)
 }
 
 fn connect_or_spawn(tx: &app::Sender<Msg>) -> io::Result<Stream> {

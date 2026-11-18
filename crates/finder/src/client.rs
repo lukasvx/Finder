@@ -19,6 +19,11 @@ pub enum Msg {
     Status(String),
     /// A newer `finder` was started: close this one.
     Quit,
+    /// The icon thread's result for a path.
+    Icon {
+        path: Vec<u8>,
+        found: crate::icons::Found,
+    },
 }
 
 #[derive(Default)]

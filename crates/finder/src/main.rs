@@ -8,6 +8,7 @@
 #[cfg(windows)]
 mod activate;
 mod client;
+mod icons;
 mod open;
 mod results;
 mod setup;
@@ -30,6 +31,7 @@ use fltk::prelude::*;
 use fltk::{app, draw, window::Window};
 
 use crate::client::{Client, Msg};
+use crate::icons::Icons;
 use crate::results::{ROW_H, ResultList};
 use crate::setup::Setup;
 use crate::theme::Palette;
@@ -100,6 +102,28 @@ fn place(win: &mut Window, middle: bool) {
 /// Opens a hit; the flag says it is a program to run.
 type OpenFn = dyn Fn(&Hit, bool);
 
+/// Colors for icons that follow the color scheme (Linux icon themes).
+fn icon_colors(p: &Palette) -> icons::Colors {
+    #[cfg(target_os = "linux")]
+    {
+        let hex = |c: fltk::enums::Color| {
+            let (r, g, b) = c.to_rgb();
+            format!("#{r:02x}{g:02x}{b:02x}")
+        };
+        icons::Colors {
+            text: hex(p.text),
+            background: hex(p.surface),
+            highlight: hex(p.accent),
+            highlighted_text: hex(p.on_accent),
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = p;
+        icons::Colors
+    }
+}
+
 fn plural(n: u64) -> String {
     format!("{n} match{}", if n == 1 { "" } else { "es" })
 }
@@ -130,6 +154,7 @@ fn main() {
     let (tx, rx) = app::channel::<Msg>();
     single::listen(tx);
     let client = Rc::new(Client::start(tx));
+    let icons = Rc::new(RefCell::new(Icons::new(tx, icon_colors(&p))));
 
     let mut win = Window::default().with_size(W, if first_run { setup::H } else { BAR_H + 1 }).with_label("Finder");
     win.set_xclass("finder");
@@ -169,7 +194,7 @@ fn main() {
     let mut line = fill(1, BAR_H, W - 2, 1, p.border);
     line.hide();
     let open_slot: Rc<RefCell<Option<Rc<OpenFn>>>> = Rc::default();
-    let mut list = ResultList::new(1, BAR_H + 1, W - 2, ROW_H, p, {
+    let mut list = ResultList::new((1, BAR_H + 1, W - 2, ROW_H), p, icons.clone(), {
         let open_slot = open_slot.clone();
         move |hit, program| {
             let f = open_slot.borrow().clone();
@@ -361,6 +386,10 @@ fn main() {
                 show_msg();
             }
             Msg::Quit => app::quit(),
+            Msg::Icon { path, found } => {
+                icons.borrow_mut().loaded(path, found);
+                list.widget().redraw();
+            }
         }
     }
 }

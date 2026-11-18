@@ -15,5 +15,9 @@ fltk = { version = "1.5.23", features = ["use-wayland", "no-images"] }
 # Only for `Fl_open_display`, which fltk does not wrap.
 fltk-sys = "1.5.23"
 
+# Icon theme SVGs (Linux), as Dolphin shows them.
+[target.'cfg(target_os = "linux")'.dependencies]
+resvg = { version = "0.50.0", default-features = false }
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

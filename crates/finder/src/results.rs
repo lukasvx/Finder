@@ -14,11 +14,12 @@ use fltk::enums::{Align, Color, Event, Font};
 use fltk::prelude::*;
 use fltk::{app, draw, widget::Widget};
 
+use crate::icons::{self, Icon, Icons};
 use crate::theme::{Palette, mix};
 
 pub const ROW_H: i32 = 46;
-const ICON_X: i32 = 18;
-const TEXT_X: i32 = 54;
+const ICON_X: i32 = 16;
+const TEXT_X: i32 = 60;
 const SCROLL_W: i32 = 10;
 
 /// One result, prepared for drawing.
@@ -41,6 +42,7 @@ struct State {
     /// Grab offset while dragging the scrollbar thumb.
     drag: Option<i32>,
     palette: Palette,
+    icons: Rc<RefCell<Icons>>,
 }
 
 #[derive(Clone)]
@@ -51,7 +53,12 @@ pub struct ResultList {
 
 impl ResultList {
     /// `on_open(hit, program)` is called on double-click; `program` if the hit is a program to run.
-    pub fn new(x: i32, y: i32, w: i32, h: i32, palette: Palette, on_open: impl Fn(&Hit, bool) + 'static) -> ResultList {
+    pub fn new(
+        (x, y, w, h): (i32, i32, i32, i32),
+        palette: Palette,
+        icons: Rc<RefCell<Icons>>,
+        on_open: impl Fn(&Hit, bool) + 'static,
+    ) -> ResultList {
         let mut widget = Widget::new(x, y, w, h, None);
         let st = Rc::new(RefCell::new(State {
             rows: Vec::new(),
@@ -60,6 +67,7 @@ impl ResultList {
             scroll: 0,
             drag: None,
             palette,
+            icons,
         }));
         widget.draw({
             let st = st.clone();
@@ -84,6 +92,7 @@ impl ResultList {
     pub fn set_hits(&mut self, hits: Vec<Hit>, query: &str, case_sensitive: bool) {
         let mut st = self.st.borrow_mut();
         st.rows = hits.into_iter().map(|h| Row::new(h, query, case_sensitive)).collect();
+        st.icons.borrow_mut().cancel_pending();
         st.selected = (!st.rows.is_empty()).then_some(0);
         st.hover = None;
         st.scroll = 0;
@@ -388,7 +397,13 @@ fn draw_list(w: &mut Widget, st: &State) {
             draw::set_draw_color(if on { p.accent } else { p.hover });
             draw::draw_rounded_rectf(x + 6, ry + 2, ww - 12 - SCROLL_W / 2, ROW_H - 4, 7);
         }
-        draw_icon(x + ICON_X, ry + (ROW_H - 24) / 2, row.kind, &row.name, p, on);
+        let (ix, iy) = (x + ICON_X, ry + (ROW_H - icons::SIZE) / 2);
+        match st.icons.borrow_mut().get(&row.hit.path, row.hit.is_dir) {
+            Icon::Image(img) => img.clone().draw(ix, iy, icons::SIZE, icons::SIZE),
+            Icon::Pending => {}
+            // The drawn icons are 24 px.
+            Icon::Missing => draw_icon(ix + 4, iy + 4, row.kind, &row.name, p, on),
+        }
         let mut text_w = ww - TEXT_X - 16 - SCROLL_W;
         let (fg, sub) = if on { (p.on_accent, mix(p.accent, p.on_accent, 0.8)) } else { (p.text, p.muted) };
         if row.program {

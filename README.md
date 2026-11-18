@@ -41,6 +41,7 @@ Measured (Linux, 12 cores, NVMe; `cargo test --release -p finderd -- --ignored -
 | Autostart | `~/.config/autostart/finderd.desktop` | `finderd` value in `HKCU\…\CurrentVersion\Run` |
 | Hotkey | KDE global shortcut (kglobalaccel, D-Bus); other desktops: bind `finder` yourself | `RegisterHotKey` |
 | Window | X11 (XWayland under Wayland), so it can sit at the top edge | Win32 |
+| Icons | Like Dolphin: MIME type (shared-mime-info globs, content sniffing) → desktop icon theme (KDE/GTK setting, else Breeze), SVGs rendered with `resvg` in the color scheme | Like Explorer: shell icon (`SHGetFileInfoW`), so programs show their own; embedded icon or type icon as fallback |
 | IPC | Unix socket in `$XDG_RUNTIME_DIR`, mode 0600 | Named pipe `\\.\pipe\finder-<user SID>`, owner-only DACL |
 | Roots | `/` minus `/proc`, `/sys`, `/dev`, `/run` and non-local mounts | Fixed drives |
 | Live updates | inotify on `$HOME`; rest via 15-min catch-up | `ReadDirectoryChangesW` on every drive; 15-min catch-up as safety net |
@@ -73,7 +74,7 @@ Fedora deps: `rust cargo gcc-c++ libstdc++-static cmake libX11-devel libXext-dev
 |---|---|
 | `crates/core` | Paths, settings, autostart, hotkey names, IPC protocol, case folding |
 | `crates/finderd` | Daemon: index, scan, change listener, search, hotkey |
-| `crates/finder` | UI, first-run setup |
+| `crates/finder` | UI, first-run setup, file icons |
 
 ## Settings
 

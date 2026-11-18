@@ -88,11 +88,13 @@ impl Layout {
     }
 }
 
-/// Top edge of the screen the mouse is on, centered (below a top panel, if any).
-fn place(win: &mut Window) {
+/// Put the window on the screen the mouse is on, horizontally centered: at the top edge (below a
+/// top panel, if any), or for the first-run setup in the middle.
+fn place(win: &mut Window, middle: bool) {
     let (mx, my) = app::get_mouse();
-    let (sx, sy, sw, _) = app::screen_work_area(app::screen_num(mx, my));
-    win.set_pos(sx + (sw - W) / 2, sy);
+    let (sx, sy, sw, sh) = app::screen_work_area(app::screen_num(mx, my));
+    let y = if middle { sy + (sh - win.h()) / 2 } else { sy };
+    win.set_pos(sx + (sw - W) / 2, y);
 }
 
 /// Opens a hit; the flag says it is a program to run.
@@ -290,6 +292,7 @@ fn main() {
             let (settings, in_setup, client, error) =
                 (settings.clone(), in_setup.clone(), client.clone(), error.clone());
             let (setup, mut bar, mut input, show_msg) = (s.clone(), bar.clone(), input.clone(), show_msg.clone());
+            let mut win = win.clone();
             move |_| {
                 let new = setup.settings();
                 let mut problems = Vec::new();
@@ -308,11 +311,13 @@ fn main() {
                 client.connect();
                 *error.borrow_mut() = problems.join(" · ");
                 show_msg();
+                // From the middle of the screen to the search bar's place at the top.
+                place(&mut win, false);
             }
         });
     }
 
-    place(&mut win);
+    place(&mut win, first_run);
     win.show();
     match &mut setup {
         Some(s) => s.focus(),

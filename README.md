@@ -45,7 +45,7 @@ Measured (Linux, 12 cores, NVMe; `cargo test --release -p finderd -- --ignored -
 | Roots | `/` minus `/proc`, `/sys`, `/dev`, `/run` and non-local mounts | Fixed drives |
 | Live updates | inotify on `$HOME`; rest via 15-min catch-up | `ReadDirectoryChangesW` on every drive; 15-min catch-up as safety net |
 
-`finderd` logs to stderr only. Recently opened paths (ranked first) are kept in memory. On start it moves a v0.4 index over and deletes v0.4 leftovers (`settings.conf`, `recent.txt`, `finderd.log`, `--install` launchers, KRunner plugin).
+Connections start with a version check: a running `finderd` from another version (e.g. after an update) is stopped and the new one started. `finderd` logs to stderr only. Recently opened paths (ranked first) are kept in memory. On start it moves a v0.4 index over and deletes v0.4 leftovers (`settings.conf`, `recent.txt`, `finderd.log`, `--install` launchers, KRunner plugin).
 
 ## Build
 
@@ -77,7 +77,7 @@ Fedora deps: `rust cargo gcc-c++ libstdc++-static cmake libX11-devel libXext-dev
 
 ## Settings
 
-`settings.json`, next to `index.bin`. The first launch shows a setup (hotkey, case sensitivity) that writes it and sets up autostart; after that it is changed only by editing the file. `finder` reads it on every launch; `finderd` applies hotkey edits live.
+`settings.json`, next to `index.bin`. The first launch shows a setup in the middle of the screen (hotkey, case sensitivity) that writes it, sets up autostart and opens the search bar; after that it is changed only by editing the file. `finder` reads it on every launch; `finderd` applies hotkey edits live.
 
 ```json
 {

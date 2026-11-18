@@ -7,5 +7,6 @@ pub mod launch;
 pub mod paths;
 #[cfg(windows)]
 pub mod pipe;
+pub mod process;
 pub mod proto;
 pub mod settings;

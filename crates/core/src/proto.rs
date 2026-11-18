@@ -8,12 +8,37 @@ pub type Stream = std::os::unix::net::UnixStream;
 #[cfg(windows)]
 pub type Stream = std::fs::File;
 
-/// Connect to the running daemon.
-pub fn connect() -> io::Result<Stream> {
+/// Protocol version; a daemon that answers `Version` with another number is replaced.
+/// (v0.4 daemons don't know the request at all and just hang up.)
+pub const VERSION: u32 = 1;
+
+fn connect_raw() -> io::Result<Stream> {
     #[cfg(unix)]
     return Stream::connect(crate::paths::socket_path());
     #[cfg(windows)]
     return crate::pipe::connect();
+}
+
+/// Connect to the running daemon, if it speaks this protocol version. A daemon from another
+/// version (an update replaced the files, but the old one still runs) is stopped, so the caller
+/// can start its own; that case returns `ErrorKind::ConnectionRefused` like "none running".
+pub fn connect() -> io::Result<Stream> {
+    let mut c = connect_raw()?;
+    match exchange(&mut c, &Request::Version) {
+        Ok(Response::Version(v)) if v == VERSION => return Ok(c),
+        Ok(Response::Version(_)) => {
+            let _ = exchange(&mut c, &Request::Quit);
+        }
+        // Too old to know `Version`.
+        _ => crate::process::stop_peer(&c),
+    }
+    drop(c);
+    // Wait until it is gone (its socket or pipe no longer accepts connections).
+    let start = std::time::Instant::now();
+    while connect_raw().is_ok() && start.elapsed() < std::time::Duration::from_secs(3) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Err(io::Error::new(io::ErrorKind::ConnectionRefused, "stopped a finderd from another version"))
 }
 
 /// Send `req` and wait for the reply.
@@ -28,9 +53,11 @@ const MAX_FRAME: u32 = 256 << 20;
 const REQ_SEARCH: u8 = 3;
 const REQ_OPENED: u8 = 2;
 const REQ_QUIT: u8 = 4;
+const REQ_VERSION: u8 = 5;
 const RESP_RESULTS: u8 = 1;
 const RESP_OK: u8 = 2;
 const RESP_ERROR: u8 = 3;
+const RESP_VERSION: u8 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
@@ -45,8 +72,10 @@ pub enum Request {
     Search(Query),
     /// The user opened this path; used for ranking.
     Opened(Vec<u8>),
-    /// Exit the daemon (`finderd --uninstall`).
+    /// Exit the daemon (`finderd --uninstall`, or replaced by another version).
     Quit,
+    /// Ask for the protocol version (`Response::Version`).
+    Version,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +89,7 @@ pub enum Response {
     Results { total: u64, indexing: bool, hits: Vec<Hit> },
     Ok,
     Error(String),
+    Version(u32),
 }
 
 fn invalid(msg: &str) -> io::Error {
@@ -160,6 +190,9 @@ impl Request {
             Request::Quit => {
                 e.u8(REQ_QUIT);
             }
+            Request::Version => {
+                e.u8(REQ_VERSION);
+            }
         }
         e.0
     }
@@ -173,6 +206,7 @@ impl Request {
             }
             REQ_OPENED => Request::Opened(d.bytes()?.to_vec()),
             REQ_QUIT => Request::Quit,
+            REQ_VERSION => Request::Version,
             _ => return Err(invalid("unknown request (finder and finderd from different versions?)")),
         };
         d.end()?;
@@ -201,6 +235,9 @@ impl Response {
             Response::Ok => {
                 e.u8(RESP_OK);
             }
+            Response::Version(v) => {
+                e.u8(RESP_VERSION).u32(*v);
+            }
             Response::Error(msg) => {
                 e.u8(RESP_ERROR).bytes(msg.as_bytes());
             }
@@ -223,6 +260,7 @@ impl Response {
             }
             RESP_OK => Response::Ok,
             RESP_ERROR => Response::Error(d.string()?),
+            RESP_VERSION => Response::Version(d.u32()?),
             _ => return Err(invalid("unknown response")),
         };
         d.end()?;
@@ -248,6 +286,7 @@ mod tests {
             Request::Search(Query { text: "héllo".into(), case_sensitive: true, limit: 500 }),
             Request::Opened(b"/home/x".to_vec()),
             Request::Quit,
+            Request::Version,
         ];
         for r in reqs {
             let mut buf = Vec::new();
@@ -262,6 +301,7 @@ mod tests {
             },
             Response::Ok,
             Response::Error("boom".into()),
+            Response::Version(VERSION),
         ];
         for r in resps {
             let mut buf = Vec::new();

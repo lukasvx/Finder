@@ -18,9 +18,10 @@ pub type Listener = std::os::unix::net::UnixListener;
 /// Bind the daemon socket. Fails if another daemon is already listening.
 #[cfg(unix)]
 pub fn bind() -> io::Result<Listener> {
-    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::os::unix::net::UnixListener;
     let path = finder_core::paths::socket_path();
-    if UnixStream::connect(&path).is_ok() {
+    // Also stops a running finderd from another version.
+    if finder_core::proto::connect().is_ok() {
         return Err(io::Error::new(io::ErrorKind::AddrInUse, "another finderd is already running"));
     }
     let _ = std::fs::remove_file(&path);
@@ -36,6 +37,10 @@ pub type Listener = finder_core::pipe::Listener;
 /// Bind the daemon pipe. Fails if another daemon is already listening.
 #[cfg(windows)]
 pub fn bind() -> io::Result<Listener> {
+    // Also stops a running finderd from another version, which frees the pipe name.
+    if finder_core::proto::connect().is_ok() {
+        return Err(io::Error::new(io::ErrorKind::AddrInUse, "another finderd is already running"));
+    }
     Listener::bind()
 }
 
@@ -79,6 +84,7 @@ fn handle<S: io::Read + io::Write>(stream: &mut S, shared: &Shared) -> io::Resul
                 shared.recent.lock().unwrap().push(path);
                 Response::Ok
             }
+            Request::Version => Response::Version(finder_core::proto::VERSION),
             Request::Quit => {
                 Response::Ok.send(stream)?;
                 std::process::exit(0);

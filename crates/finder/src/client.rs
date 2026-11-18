@@ -128,7 +128,7 @@ fn worker(slot: &(Mutex<Slot>, Condvar), tx: &app::Sender<Msg>) {
                 tx.send(Msg::Results { seq, total, indexing, hits });
             }
             Ok(Response::Error(e)) => tx.send(Msg::Status(format!("finderd: {e}"))),
-            Ok(Response::Ok) => {}
+            Ok(Response::Ok | Response::Version(_)) => {}
             Err(e) => {
                 conn = None;
                 tx.send(Msg::Status(format!("Lost connection to finderd: {e}")));

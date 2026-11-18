@@ -16,7 +16,7 @@ mod uitest;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use finder_core::paths;
+use finder_core::{hotkey, paths};
 use finder_core::proto::{Hit, Query};
 use finder_core::settings::{Settings, Theme, split_list};
 use fltk::button::{Button, CheckButton, RadioRoundButton, ToggleButton};
@@ -40,6 +40,9 @@ const FOOTER_H: i32 = 34;
 const BODY_Y: i32 = HEADER_H + 1;
 const BODY_H: i32 = H - HEADER_H - FOOTER_H - 2;
 const PLACEHOLDER: &str = "Search files and folders";
+/// Height of the settings panel's hotkey row; the hotkey is registered by `finderd` on Windows only.
+const HOTKEY_ROW: i32 = if cfg!(windows) { 40 } else { 0 };
+const HOTKEY_HINT: &str = "Opens Finder from anywhere, e.g. ctrl+alt+space, win+shift+f, f12. Empty: off.";
 
 type Pal = Rc<Cell<Palette>>;
 /// A callback bound after the widgets it needs exist.
@@ -213,6 +216,9 @@ struct Panel {
     themes: [RadioRoundButton; 3],
     exclude: MultilineInput,
     exclude_border: Frame,
+    hotkey: Input,
+    hotkey_border: Frame,
+    hotkey_hint: Frame,
     texts: Vec<Frame>,
     hints: Vec<Frame>,
     done: Button,
@@ -251,6 +257,22 @@ impl Panel {
             r
         };
         let themes = [theme(0, "Auto"), theme(1, "Light"), theme(2, "Dark")];
+        texts.push(label(x, y + 190, 80, 26, "Hotkey", 14, false));
+        let mut hotkey_border = Frame::new(x + 79, y + 189, 182, 28, None);
+        hotkey_border.set_frame(FrameType::BorderFrame);
+        let mut hotkey = Input::new(x + 80, y + 190, 180, 26, None);
+        hotkey.set_frame(FrameType::FlatBox);
+        hotkey.set_text_size(13);
+        hotkey.set_trigger(CallbackTrigger::Changed);
+        let mut hotkey_hint = label(x + 272, y + 190, W - 2 * x - 272, 26, HOTKEY_HINT, 11, false);
+        hotkey_hint.set_align(Align::Left | Align::Inside | Align::Wrap);
+        if HOTKEY_ROW == 0 {
+            texts.last_mut().unwrap().hide();
+            hotkey_border.hide();
+            hotkey.hide();
+            hotkey_hint.hide();
+        }
+        let y = y + HOTKEY_ROW;
         texts.push(label(x, y + 190, 300, 22, "Excluded folders", 14, true));
         hints.push(label(
             x,
@@ -261,18 +283,58 @@ impl Panel {
             12,
             false,
         ));
-        let ex_h = BODY_H - 236 - 56;
+        let ex_h = BODY_H - HOTKEY_ROW - 236 - 56;
         let mut exclude_border = Frame::new(x - 1, y + 235, W - 2 * x + 2, ex_h + 2, None);
         exclude_border.set_frame(FrameType::BorderFrame);
         let mut exclude = MultilineInput::new(x, y + 236, W - 2 * x, ex_h, None);
         exclude.set_frame(FrameType::FlatBox);
         exclude.set_text_size(13);
         let file = paths::settings_file();
+        let y = BODY_Y;
         hints.push(label(x, y + BODY_H - 42, W - 200, 28, &file.display().to_string(), 11, false));
         let done = pill(W - x - 90, y + BODY_H - 42, 90, 28, "Done", true, pal);
         group.end();
         group.hide();
-        Panel { group, case, path, hidden, themes, exclude, exclude_border, texts, hints, done }
+        hotkey.set_callback({
+            let mut hint = hotkey_hint.clone();
+            move |i| {
+                let valid = hotkey::normalize(&i.value()).is_some();
+                hint.set_label(if valid { HOTKEY_HINT } else { "Not a valid hotkey. Use e.g. ctrl+alt+space." });
+                if let Some(mut g) = hint.parent() {
+                    g.redraw();
+                }
+            }
+        });
+        Panel {
+            group,
+            case,
+            path,
+            hidden,
+            themes,
+            exclude,
+            exclude_border,
+            hotkey,
+            hotkey_border,
+            hotkey_hint,
+            texts,
+            hints,
+            done,
+        }
+    }
+
+    /// Copy the text fields (excluded folders, valid hotkey) into `s`; true if anything changed.
+    fn store(&self, s: &mut Settings) -> bool {
+        let mut changed = false;
+        let exclude = split_list(&self.exclude.value());
+        if s.exclude != exclude {
+            s.exclude = exclude;
+            changed = true;
+        }
+        if let Some(h) = hotkey::normalize(&self.hotkey.value()).filter(|h| *h != s.hotkey) {
+            s.hotkey = h;
+            changed = true;
+        }
+        changed
     }
 
     fn load(&mut self, s: &Settings) {
@@ -283,6 +345,8 @@ impl Panel {
             b.set_value(s.theme == t);
         }
         self.exclude.set_value(&s.exclude.join("\n"));
+        self.hotkey.set_value(&s.hotkey);
+        self.hotkey.do_callback();
     }
 
     fn style(&mut self, p: &Palette) {
@@ -308,6 +372,12 @@ impl Panel {
         self.exclude.set_cursor_color(p.accent);
         self.exclude.set_selection_color(p.match_bg);
         self.exclude_border.set_color(p.border);
+        self.hotkey.set_color(p.surface);
+        self.hotkey.set_text_color(p.text);
+        self.hotkey.set_cursor_color(p.accent);
+        self.hotkey.set_selection_color(p.match_bg);
+        self.hotkey_border.set_color(p.border);
+        self.hotkey_hint.set_label_color(p.muted);
     }
 }
 
@@ -584,7 +654,7 @@ fn main() {
     }
     drop(p);
 
-    // Open/close the settings panel. Closing saves the excluded folders.
+    // Open/close the settings panel. Closing saves the text fields (excluded folders, hotkey).
     let show_panel = {
         let (panel, settings, mut list_w, mut input, mut gear) =
             (panel.clone(), settings.clone(), list.widget().clone(), input.clone(), gear.clone());
@@ -601,14 +671,12 @@ fn main() {
                 more.hide();
                 p.group.show();
             } else {
-                let exclude = split_list(&p.exclude.value());
                 p.group.hide();
                 list_w.show();
                 let _ = input.take_focus();
-                let changed = settings.borrow().exclude != exclude;
+                let changed = p.store(&mut settings.borrow_mut());
                 drop(p);
                 if changed {
-                    settings.borrow_mut().exclude = exclude;
                     save();
                 }
                 run_query(LIMIT);
@@ -732,13 +800,9 @@ fn main() {
     }
 
     // Closed while the settings panel was open (focus loss, Esc, another `finder`): keep edits
-    // to the excluded folders, which are otherwise saved when the panel closes.
+    // to the text fields, which are otherwise saved when the panel closes.
     let p = panel.borrow();
-    if p.group.visible() {
-        let exclude = split_list(&p.exclude.value());
-        if settings.borrow().exclude != exclude {
-            settings.borrow_mut().exclude = exclude;
-            let _ = settings.borrow().save();
-        }
+    if p.group.visible() && p.store(&mut settings.borrow_mut()) {
+        let _ = settings.borrow().save();
     }
 }

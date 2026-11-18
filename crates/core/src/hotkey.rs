@@ -77,6 +77,15 @@ pub fn parse(s: &str) -> Option<Hotkey> {
     (mods != 0 || (0x70..=0x87).contains(&vk)).then_some(Hotkey { mods, vk })
 }
 
+/// The setting value for `s`: lowercase `mod+key` without spaces, `""` for none; `None` if invalid.
+pub fn normalize(s: &str) -> Option<String> {
+    if s.trim().is_empty() {
+        return Some(String::new());
+    }
+    parse(s)?;
+    Some(s.split('+').map(|p| p.trim().to_ascii_lowercase()).collect::<Vec<_>>().join("+"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +97,13 @@ mod tests {
         assert_eq!(parse("alt+`"), Some(Hotkey { mods: MOD_ALT, vk: 0xC0 }));
         assert_eq!(parse("f12"), Some(Hotkey { mods: 0, vk: 0x7B }));
         assert_eq!(parse("ctrl+1"), Some(Hotkey { mods: MOD_CONTROL, vk: 0x31 }));
+    }
+
+    #[test]
+    fn normalizes() {
+        assert_eq!(normalize(" Ctrl + Alt + Space ").as_deref(), Some("ctrl+alt+space"));
+        assert_eq!(normalize("  ").as_deref(), Some(""));
+        assert_eq!(normalize("ctrl+nope"), None);
     }
 
     #[test]

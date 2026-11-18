@@ -82,10 +82,9 @@ impl Settings {
                     continue;
                 }
                 "hotkey" => {
-                    if value.is_empty() || hotkey::parse(value).is_some() {
-                        s.hotkey = value.to_ascii_lowercase();
-                    } else {
-                        warnings.push(invalid());
+                    match hotkey::normalize(value) {
+                        Some(h) => s.hotkey = h,
+                        None => warnings.push(invalid()),
                     }
                     continue;
                 }

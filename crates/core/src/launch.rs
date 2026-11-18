@@ -1,6 +1,7 @@
-//! Programs named like the keyword: `discord` finds `Discord.exe` on Windows, or an executable
-//! file named `discord` on Linux. Such hits rank first, and Enter runs them instead of showing
-//! them in the file manager. Shared so the daemon (ranking) and the UI (Enter) agree.
+//! Programs named like the keyword: `discord` finds `Discord.exe` or a shortcut `Discord.lnk` to a
+//! program on Windows, or an executable file named `discord` on Linux. Such hits rank first, and
+//! Enter runs them instead of showing them in the file manager. Shared so the daemon (ranking)
+//! and the UI (Enter) agree.
 
 use std::path::Path;
 
@@ -19,12 +20,16 @@ fn name_matches_on(windows: bool, name: &[u8], keyword: &[u8]) -> bool {
     if !windows {
         return name == keyword;
     }
-    let stem = name.len().checked_sub(4).filter(|&n| name[n..].eq_ignore_ascii_case(b".exe")).map(|n| &name[..n]);
+    let stem = name
+        .len()
+        .checked_sub(4)
+        .filter(|&n| name[n..].eq_ignore_ascii_case(b".exe") || name[n..].eq_ignore_ascii_case(b".lnk"))
+        .map(|n| &name[..n]);
     stem.is_some() && (stem == Some(keyword) || name == keyword)
 }
 
-/// The file can be run: an `.exe` on Windows (judged by name, like the ranking), a regular file
-/// with an execute bit on Unix.
+/// The file can be run: an `.exe` (judged by name) or a shortcut to a program on Windows, a
+/// regular file with an execute bit on Unix.
 pub fn is_executable(path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -33,8 +38,21 @@ pub fn is_executable(path: &Path) -> bool {
     }
     #[cfg(windows)]
     {
-        path.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        match path.extension() {
+            Some(e) if e.eq_ignore_ascii_case("exe") => true,
+            Some(e) if e.eq_ignore_ascii_case("lnk") => is_program_shortcut(path),
+            _ => false,
+        }
     }
+}
+
+/// A Windows shortcut that starts a program.
+pub fn is_program_shortcut(path: &Path) -> bool {
+    use std::io::Read;
+    // Shortcuts are a few KB; don't read whatever else is named `.lnk` in full.
+    let mut data = Vec::new();
+    let read = std::fs::File::open(path).and_then(|f| f.take(64 * 1024).read_to_end(&mut data));
+    read.is_ok() && crate::lnk::Link::parse(&data).is_some_and(|l| l.runs_program())
 }
 
 /// The hit at `path` is the program to run for `keyword`. Touches the disk (Unix) only when the
@@ -64,6 +82,9 @@ mod tests {
         assert!(win("Discord.EXE", "Discord"));
         assert!(!win("discord", "discord"));
         assert!(!win("discord.exe.lnk", "discord"));
+        assert!(win("Discord.LNK", "Discord"));
+        assert!(win("discord.lnk", "discord.lnk"));
+        assert!(!win("discord.url", "discord"));
         assert!(!win("discordx.exe", "discord"));
         assert!(!win(".exe", ""));
         let unix = |n: &str, k: &str| name_matches_on(false, n.as_bytes(), k.as_bytes());
@@ -90,6 +111,27 @@ mod tests {
         assert!(!is_launch_hit(&b(&exe), true, "Discord", true));
         assert!(!is_launch_hit(&b(&doc), false, "notes", false));
         assert!(!is_launch_hit(&b(&exe), false, "disc", false));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn program_shortcuts() {
+        let dir = std::env::temp_dir().join(format!("finder-lnk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let build = crate::lnk::tests::build;
+        let app = dir.join("App.lnk");
+        let doc = dir.join("Notes.lnk");
+        std::fs::write(&app, build(Some(r"C:\Program Files\App\app.exe"), true, None, None)).unwrap();
+        std::fs::write(&doc, build(Some(r"C:\Users\me\notes.txt"), true, None, None)).unwrap();
+        assert!(is_program_shortcut(&app));
+        assert!(!is_program_shortcut(&doc));
+        #[cfg(windows)]
+        {
+            assert!(is_executable(&app) && !is_executable(&doc));
+            assert!(is_launch_hit(&paths::to_bytes(&app), false, "app", false));
+            assert!(!is_launch_hit(&paths::to_bytes(&doc), false, "notes", false));
+        }
+        assert!(!is_program_shortcut(&dir.join("missing.lnk")));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

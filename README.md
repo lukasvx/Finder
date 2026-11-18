@@ -7,7 +7,7 @@ Instant file locator for Linux and Windows: press the hotkey, type a keyword, pi
 1. The hotkey opens a search bar at the top edge of the screen (like KRunner); pressing it again closes it.
 2. Typing lists all files and folders on the system whose name contains the keyword; the bar grows downward to show them.
 3. User picks one → bar closes, file manager opens: folder → that folder; file → its parent folder with the file selected.
-4. Programs named like the keyword (`discord` → `Discord.exe`; Linux: an executable file `discord`) rank first; Enter runs them, Ctrl+Enter shows them in the file manager.
+4. Programs named like the keyword (`discord` → `Discord.exe`, or a shortcut `Discord.lnk` to a program; Linux: an executable file `discord`) rank first; Enter runs them, Ctrl+Enter shows them in the file manager.
 
 File manager: Dolphin (Linux), Explorer (Windows). The UI is minimal and not configurable: light or dark like the desktop.
 

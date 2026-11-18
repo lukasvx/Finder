@@ -78,8 +78,9 @@ pub fn run(path: &Path) -> io::Result<()> {
     spawn(&mut cmd)
 }
 
-/// Run the program at `path` in its own folder. `ShellExecuteW` rather than `CreateProcess`, so a
-/// program that requires admin rights gets the elevation prompt.
+/// Run the program at `path` in its own folder (a shortcut: as set in the shortcut, like Explorer
+/// does). `ShellExecuteW` rather than `CreateProcess`, so a program that requires admin rights
+/// gets the elevation prompt, and a shortcut gets its arguments.
 #[cfg(windows)]
 pub fn run(path: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
@@ -87,7 +88,8 @@ pub fn run(path: &Path) -> io::Result<()> {
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let wide = |p: &Path| p.as_os_str().encode_wide().chain([0]).collect::<Vec<u16>>();
     let file = wide(path);
-    let dir = path.parent().map(wide);
+    let shortcut = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk"));
+    let dir = path.parent().filter(|_| !shortcut).map(wide);
     let verb: Vec<u16> = "open\0".encode_utf16().collect();
     // SAFETY: all strings are NUL-terminated and outlive the call.
     let r = unsafe {

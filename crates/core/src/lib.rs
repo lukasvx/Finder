@@ -4,6 +4,7 @@ pub mod autostart;
 pub mod fold;
 pub mod hotkey;
 pub mod launch;
+pub mod lnk;
 pub mod paths;
 #[cfg(windows)]
 pub mod pipe;
